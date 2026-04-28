@@ -35,7 +35,29 @@ class NetworkTopo(Topo):
 
         Topo.__init__(self)
 
-        # Build the specified network topology here
+        h1 = self.addHost('h1',
+            ip='10.0.1.2/24', 
+            defaultRoute='via 10.0.1.1',)
+        h2 = self.addHost('h2',
+            ip='10.0.1.3/24', 
+            defaultRoute='via 10.0.1.1',)
+        ext = self.addHost('ext',
+            ip='192.168.1.123/24',
+            defaultRoute='via 192.168.1.1',)
+        ser = self.addHost('ser',
+            ip='10.0.2.2/24',
+            defaultRoute='via 10.0.2.1',)
+
+        s1 = self.addSwitch('s1')
+        s2 = self.addSwitch('s2')
+        s3 = self.addSwitch('s3')
+
+        self.addLink(h1, s1, bw=15, delay='10ms')
+        self.addLink(h2, s1, bw=15, delay='10ms')
+        self.addLink(s1, s3, bw=15, delay='10ms', addr2='00:00:00:00:01:01')
+        self.addLink(s3, ext, bw=15, delay='10ms', addr1='00:00:00:00:01:03')
+        self.addLink(s3, s2, bw=15, delay='10ms', addr1='00:00:00:00:01:02')
+        self.addLink(s2, ser, bw=15, delay='10ms')
 
 def run():
     topo = NetworkTopo()
@@ -44,9 +66,11 @@ def run():
                   link=TCLink,
                   controller=None)
     net.addController(
+        # Chris NOTE: this is the node name for xterm c1, keep it in mind for later.
         'c1', 
         controller=RemoteController, 
         ip="127.0.0.1", 
+        #Chris Notes: we see 6653 in the original Lab1 Figure 1 but in the lab description it is 6633. Just sayng
         port=6653)
     net.start()
     CLI(net)
