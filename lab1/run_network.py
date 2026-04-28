@@ -70,7 +70,7 @@ def run():
         'c1', 
         controller=RemoteController, 
         ip="127.0.0.1", 
-        #Chris Notes: we see 6653 in the original Lab1 Figure 1 but in the lab description it is 6633. Just sayng
+        #Chris NOTE: we see 6653 in the original Lab1 Figure 1 but in the lab description it is 6633. Just sayng
         port=6653)
     net.start()
     CLI(net)
