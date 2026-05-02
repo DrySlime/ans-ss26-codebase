@@ -93,7 +93,7 @@ class LearningSwitch(app_manager.RyuApp):
         src = eth_pkt.src
         in_port = msg.match['in_port']
 
-        self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+        #self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
 
         # learn a mac address to avoid FLOOD next time.
         # NOTE: here is an example entry

@@ -55,8 +55,8 @@ class NetworkTopo(Topo):
         self.addLink(h1, s1, bw=15, delay='10ms')
         self.addLink(h2, s1, bw=15, delay='10ms')
         self.addLink(s1, s3, bw=15, delay='10ms', addr2='00:00:00:00:01:01')
-        self.addLink(s3, ext, bw=15, delay='10ms', addr1='00:00:00:00:01:03')
         self.addLink(s3, s2, bw=15, delay='10ms', addr1='00:00:00:00:01:02')
+        self.addLink(s3, ext, bw=15, delay='10ms', addr1='00:00:00:00:01:03')        
         self.addLink(s2, ser, bw=15, delay='10ms')
 
 def run():

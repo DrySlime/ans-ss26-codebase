@@ -18,34 +18,22 @@ class Router(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(Router, self).__init__(*args, **kwargs)
-        # Tatsächliche Referenzen zu Routing und Präfixen im RFC 1812:
-        # Sektion 2.2.5.2 (Classless Inter Domain Routing): 
-        # Hier wird vorgeschrieben, dass Router zwingend CIDR unterstützen müssen. 
-        # Netzwerkgrenzen werden durch ein variables IP-Präfix (die Subnetzmaske)
-        # definiert, nicht mehr durch historische IP-Klassen.
-
-        # Sektion 5.2.4 (Determining the Next Hop Address): 
-        # Definiert die Algorithmen zur Weiterleitung, 
-        # welche logisch auf dem Durchsuchen einer Routing-Tabelle basieren, 
-        # die Präfixe matchen muss.
-        
-        # Router port MACs assumed by the controller. CHRIS NOTE: fuck it and add prefix. but ill ask the tutor
         self.port_to_own_mac = {
             1: "00:00:00:00:01:01",
-            2: "00:00:00:00:01:03",
-            3: "00:00:00:00:01:02"
+            2: "00:00:00:00:01:02",
+            3: "00:00:00:00:01:03"
         }
         self.port_to_own_ip = {
             1: "10.0.1.1",
-            2: "192.168.1.1",
-            3: "10.0.2.1"
+            2: "10.0.2.1",
+            3: "192.168.1.1"
             }
 
         # Router port (gateways) IP addresses assumed by the controller
         self.routing_table = {
             ipaddress.IPv4Network("10.0.1.0/24"): 1,
-            ipaddress.IPv4Network("10.0.2.0/24"): 3,
-            ipaddress.IPv4Network("192.168.1.0/24"): 2
+            ipaddress.IPv4Network("10.0.2.0/24"): 2,
+            ipaddress.IPv4Network("192.168.1.0/24"): 3
         }
         self.arp_table = {}
         #buffer with the structure (ipaddress)(msg, in_port, out_port, pkt)
@@ -124,10 +112,10 @@ class Router(app_manager.RyuApp):
         parser = datapath.ofproto_parser
 
         # 1. Dynamische Extraktion als IPv4Network-Objekte
-        ext_net_obj = next(net for net, port in self.routing_table.items() if port == 2)# WAN 
-        ser_net_obj = next(net for net, port in self.routing_table.items() if port == 3)# Servernet
+        ext_net_obj = next(net for net, port in self.routing_table.items() if port == 3)# WAN 
+        ser_net_obj = next(net for net, port in self.routing_table.items() if port == 2)# Servernet
 
-        int_net_objs = [net for net, port in self.routing_table.items() if port in (1, 3)]# LANs
+        int_net_objs = [net for net, port in self.routing_table.items() if port in (1, 2)]# LANs
 
         # 2. Konvertierung in Ryu-kompatible String-Tupel ("Netzwerk-IP", "Subnetzmaske")
         ext_net = (str(ext_net_obj.network_address), str(ext_net_obj.netmask))
@@ -163,6 +151,20 @@ class Router(app_manager.RyuApp):
                 ipv4_dst=ext_net
             )
             self.add_flow(datapath, 100, match_ser_to_ext, [])
+        # --- C) Hardware-Offloading für Gateway-Schutz ---
+        # Iteriere über alle Router-Ports. Installiere eine Drop-Regel für jeden Ingress-Port, 
+        # wenn die Ziel-IP der IP eines *anderen* Router-Ports entspricht.
+        for in_port, _ in self.port_to_own_ip.items():
+            for other_port, other_ip in self.port_to_own_ip.items():
+                if in_port != other_port:
+                    match_gw_drop = parser.OFPMatch(
+                        in_port=in_port,
+                        eth_type=ether.ETH_TYPE_IP,
+                        ip_proto=in_proto.IPPROTO_ICMP,
+                        icmpv4_type=8,
+                        ipv4_dst=other_ip # Ziel ist fremdes Gateway
+                    )
+                    self.add_flow(datapath, 100, match_gw_drop, [])
 
     def handle_ethernet_packet(self, eth_pkt, in_port, ev, pkt):
         # thats the code from the ans_switch.py
