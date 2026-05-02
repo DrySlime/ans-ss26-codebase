@@ -43,10 +43,29 @@ class LearningSwitch(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
-                                match=match, instructions=inst)
+        mod = parser.OFPFlowMod(
+            datapath=datapath, #our tcp connection to the switch
+            priority=priority,  # higher priority = more specific match rule                             
+            match=match, # the matching rule from layer 2 to layer 4
+            instructions=inst # the instruction to apply
+            # CHRIS NOTE: i found this logic to implement some way of freshness of the flow entries
+            #hard_timeout=600,    # basically 10 minutes for the flow entry to expire
+            #flags=ofproto.OFPFF_SEND_FLOW_REM # Zwingend für State-Sync, this will call the flow_removed_handler
+            )
         datapath.send_msg(mod)
 
+    # Chris NOTE: This handler will be called when a flow entry expires (idle_timeout) or is removed (hard_timeout) and will be used to clean up our CAM table entries.
+    @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
+    def _flow_removed_handler(self, ev):
+        msg = ev.msg
+        dpid = msg.datapath.id
+        
+        # Extraktion der Ziel-MAC aus dem Match der abgelaufenen Regel
+        mac = msg.match.get('eth_dst') 
+        
+        if dpid in self.mac_to_port and mac in self.mac_to_port[dpid]:
+            self.logger.info(f"Flow expired: Removing MAC {mac} from DPID {dpid}")
+            del self.mac_to_port[dpid][mac]
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -89,9 +108,10 @@ class LearningSwitch(app_manager.RyuApp):
         else:            
             out_port = ofproto.OFPP_FLOOD
 
+        # this is our layer 2 forwarding action
+        # basically just forward the packet to the output port if we know it
         actions = [parser.OFPActionOutput(out_port)]
 
-        # Chris NOTE: This test is basically saying if the destination port doesnt equal FF:FF:... , then we can install a flow entry for it. 
         if out_port != ofproto.OFPP_FLOOD:
             #Chris NOTE: that will be the matchrule for the flow entry.
             # The table entry will now have a entry somewhat like | (Port) 1: (Dst) 00:00:00:00:00:01
