@@ -1,109 +1,165 @@
 """
- Copyright (c) 2026 Computer Networks Group @ UPB
+Copyright (c) 2026 Computer Networks Group @ UPB
 
- Permission is hereby granted...
- """
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+"""
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
-from ryu.ofproto import ofproto_v1_3, ether
-from ryu.lib.packet import packet, ethernet, arp, ipv4
-
+from ryu.ofproto import ofproto_v1_3
+from ryu.lib.packet import packet, ethernet, arp, ipv4, icmp
 
 
 class LearningSwitch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
-    _CONTEXTS = {'router': Router}
 
     def __init__(self, *args, **kwargs):
         super(LearningSwitch, self).__init__(*args, **kwargs)
-        self.mac_to_port = {}
+
+        # Here you can initialize the data structures you want to keep at the controller
+        self.forwarding_tables = {}  # Dictionary for each switch
+        self.port_to_own_mac = {
+            1: "00:00:00:00:01:01",
+            2: "00:00:00:00:01:02",
+            3: "00:00:00:00:01:03",
+        }
+        self.port_to_own_ip = {1: "10.0.1.1", 2: "10.0.2.1", 3: "192.168.1.1"}
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
-        datapath = ev.msg.datapath
-        
-        # Ignoriere den Router-Datapath
-        is_router = datapath.id == 3
-        if is_router:
-            return
 
+        datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
         # Initial flow entry for matching misses
         match = parser.OFPMatch()
-        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-                                          ofproto.OFPCML_NO_BUFFER)]
+        actions = [
+            parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)
+        ]
         self.add_flow(datapath, 0, match, actions)
 
+    # Add a flow entry to the flow-table
     def add_flow(self, datapath, priority, match, actions):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+
+        # Construct flow_mod message and send it
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
-                                match=match, instructions=inst)
+        mod = parser.OFPFlowMod(
+            datapath=datapath, priority=priority, match=match, instructions=inst
+        )
         datapath.send_msg(mod)
 
-
-    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def _packet_in_handler(self, ev):
-        # Chris NOTE: You can find this code snippet https://osrg.github.io/ryu-book/en/html/switching_hub.html.
-        msg = ev.msg
+    def perform_router_logic(self, msg):
         datapath = msg.datapath
-        dpid = datapath.id
+        inPort = msg.match["in_port"]
 
-        # Router-Traffic ignorieren
-        if dpid == 3:
-            return
+        # frame = packet.Packet(msg.data).get_protocol(ethernet.ethernet)
+        arpMessage = packet.Packet(msg.data).get_protocol(arp.arp)
+        # ipPacket = packet.Packet(msg.data).get_protocol(ipv4.ipv4)
+        # icmpMessage = packet.Packet(msg.data).get_protocol(icmp.icmp)
 
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
+        if (
+            arpMessage
+            and arpMessage.opcode == 1
+            and arpMessage.dst_ip in self.port_to_own_ip.values()
+        ):
+            pkt = packet.Packet()
+            ethHeader = ethernet.ethernet(
+                dst=arpMessage.src_mac,
+                src=self.port_to_own_mac[inPort],
+                ethertype=0x0806,  # ARP CODE
+            )
+            arpHeader = arp.arp(
+                dst_ip=arpMessage.src_ip,
+                src_ip=self.port_to_own_ip[inPort],
+                dst_mac=arpMessage.src_mac,
+                src_mac=self.port_to_own_mac[inPort],
+                opcode=2,
+            )
+            pkt.add_protocol(ethHeader)
+            pkt.add_protocol(arpHeader)
+            pkt.serialize()
+            actions = [datapath.ofproto_parser.OFPActionOutput(inPort)]
+            self.sendPacket(
+                datapath=datapath,
+                bufferId=datapath.ofproto.OFP_NO_BUFFER,
+                inPort=datapath.ofproto.OFPP_CONTROLLER,  # no port, because packet comes from controller
+                actionOutputs=actions,
+                data=pkt.data,
+            )
 
-        self.mac_to_port.setdefault(dpid, {})
+    def perform_switch_logic(self, msg):
+        datapath = msg.datapath
+        switchId = datapath.id
 
-        pkt = packet.Packet(msg.data)
-        eth_pkt = pkt.get_protocol(ethernet.ethernet)
-        
-        # Chris NOTE: We extract the source and destination MAC address...
-        if not eth_pkt:
-            return
-            
-        dst = eth_pkt.dst
-        src = eth_pkt.src
-        in_port = msg.match['in_port']
+        frame = packet.Packet(msg.data).get_protocol(ethernet.ethernet)
+        sourceMAC = frame.src
+        destMAC = frame.dst
+        inPort = msg.match["in_port"]
 
-        self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+        if switchId not in self.forwarding_tables:
+            self.forwarding_tables[switchId] = {}
 
-        # learn a mac address to avoid FLOOD next time.
-        # NOTE: here is an example entry
-        # 1: { dpid des ersten Switches (s1)
-        # '00:00:00:00:00:01': 1, # Host A ist an Port 1
-        # '00:00:00:00:00:02': 2  # Host B ist an Port 2
-        # }
-        self.mac_to_port[dpid][src] = in_port
+        self.forwarding_tables[switchId][sourceMAC] = inPort
 
-        if dst in self.mac_to_port[dpid]:
-            out_port = self.mac_to_port[dpid][dst]
-        else:            
-            out_port = ofproto.OFPP_FLOOD
-
-        actions = [parser.OFPActionOutput(out_port)]
-
-        # Chris NOTE: This test is basically saying if the destination port doesnt equal FF:FF:... , then we can install a flow entry for it. 
-        if out_port != ofproto.OFPP_FLOOD:
-            #Chris NOTE: that will be the matchrule for the flow entry.
-            # The table entry will now have a entry somewhat like | (Port) 1: (Dst) 00:00:00:00:00:01
-            match = parser.OFPMatch(in_port=in_port, eth_dst=dst)
+        # just set the port
+        if destMAC in self.forwarding_tables[switchId]:
+            actions = [
+                datapath.ofproto_parser.OFPActionOutput(
+                    self.forwarding_tables[switchId][destMAC]
+                )
+            ]
+            match = datapath.ofproto_parser.OFPMatch(eth_dst=destMAC, in_port=inPort)
             self.add_flow(datapath, 1, match, actions)
+        else:
+            actions = [
+                datapath.ofproto_parser.OFPActionOutput(datapath.ofproto.OFPP_FLOOD)
+            ]
+        self.sendPacket(
+            datapath, datapath.ofproto.OFP_NO_BUFFER, inPort, actions, msg.data
+        )
 
-        # construct packet_out message and send it.
-        out = parser.OFPPacketOut(datapath=datapath,
-                                  buffer_id=ofproto.OFP_NO_BUFFER,
-                                  in_port=in_port, actions=actions,
-                                  data=msg.data)
+    def sendPacket(self, datapath, bufferId, inPort, actionOutputs, data):
+        ofp_parser = datapath.ofproto_parser
+        out = ofp_parser.OFPPacketOut(datapath, bufferId, inPort, actionOutputs, data)
         datapath.send_msg(out)
 
+    # Handle the packet_in event
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        switchId = datapath.id
 
+        # Router logic
+        if switchId == 3:
+            self.perform_router_logic(msg)
+
+        # Switch logic
+        else:
+            self.perform_switch_logic(msg)
+
+        for switch, table in self.forwarding_tables.items():
+            print(f"Switch {switch}:")
+            for mac, port in table.items():
+                print(f"  {mac} -> port {port}")
+        print("-----------------------------------")

@@ -1,23 +1,23 @@
 """
- Copyright (c) 2026 Computer Networks Group @ UPB
+Copyright (c) 2026 Computer Networks Group @ UPB
 
- Permission is hereby granted, free of charge, to any person obtaining a copy of
- this software and associated documentation files (the "Software"), to deal in
- the Software without restriction, including without limitation the rights to
- use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- the Software, and to permit persons to whom the Software is furnished to do so,
- subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
 
- The above copyright notice and this permission notice shall be included in all
- copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- """
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+"""
 
 #!/bin/env python3
 
@@ -35,47 +35,51 @@ class NetworkTopo(Topo):
 
         Topo.__init__(self)
 
-        h1 = self.addHost('h1',
-            ip='10.0.1.2/24', 
-            defaultRoute='via 10.0.1.1',)
-        h2 = self.addHost('h2',
-            ip='10.0.1.3/24', 
-            defaultRoute='via 10.0.1.1',)
-        ext = self.addHost('ext',
-            ip='192.168.1.123/24',
-            defaultRoute='via 192.168.1.1',)
-        ser = self.addHost('ser',
-            ip='10.0.2.2/24',
-            defaultRoute='via 10.0.2.1',)
+        self.h1 = self.addHost(
+            "h1", ip="10.0.1.2/24", defaultRoute="via 10.0.1.1", mac="00:00:00:00:00:01"
+        )
+        self.h2 = self.addHost(
+            "h2", ip="10.0.1.3/24", defaultRoute="via 10.0.1.1", mac="00:00:00:00:00:02"
+        )
+        self.ser = self.addHost(
+            "ser",
+            ip="10.0.2.2/24",
+            defaultRoute="via 10.0.2.1",
+            mac="00:00:00:00:00:10",
+        )
+        self.ext = self.addHost(
+            "ext",
+            ip="192.168.1.123/24",
+            defaultRoute="via 192.168.1.1",
+            mac="00:00:00:00:00:20",
+        )
 
-        s1 = self.addSwitch('s1')
-        s2 = self.addSwitch('s2')
-        s3 = self.addSwitch('s3')
+        self.s1 = self.addSwitch("s1", cls=OVSKernelSwitch)
+        self.s2 = self.addSwitch("s2", cls=OVSKernelSwitch)
+        self.s3 = self.addSwitch("s3", cls=OVSKernelSwitch)
 
-        self.addLink(h1, s1, bw=15, delay='10ms')
-        self.addLink(h2, s1, bw=15, delay='10ms')
-        self.addLink(s1, s3, bw=15, delay='10ms', addr2='00:00:00:00:01:01')
-        self.addLink(s3, s2, bw=15, delay='10ms', addr1='00:00:00:00:01:02')
-        self.addLink(s3, ext, bw=15, delay='10ms', addr1='00:00:00:00:01:03')        
-        self.addLink(s2, ser, bw=15, delay='10ms')
+        self.e1 = self.addLink(self.h1, self.s1, cls=TCLink, bw=15, delay="10ms")
+        self.e2 = self.addLink(self.h2, self.s1, cls=TCLink, bw=15, delay="10ms")
+        self.e3 = self.addLink(self.ser, self.s2, cls=TCLink, bw=15, delay="10ms")
+        self.e5 = self.addLink(self.s1, self.s3, cls=TCLink, bw=15, delay="10ms")
+        self.e6 = self.addLink(self.s2, self.s3, cls=TCLink, bw=15, delay="10ms")
+        self.e4 = self.addLink(self.ext, self.s3, cls=TCLink, bw=15, delay="10ms")
+
 
 def run():
     topo = NetworkTopo()
-    net = Mininet(topo=topo,
-                  switch=OVSKernelSwitch,
-                  link=TCLink,
-                  controller=None)
-    net.addController(
-        # Chris NOTE: this is the node name for xterm c1, keep it in mind for later.
-        'c1', 
-        controller=RemoteController, 
-        ip="127.0.0.1", 
-        #Chris NOTE: we see 6653 in the original Lab1 Figure 1 but in the lab description it is 6633. Just sayng
-        port=6653)
+    net = Mininet(topo=topo, switch=OVSKernelSwitch, link=TCLink, controller=None)
+    net.addController("c1", controller=RemoteController, ip="127.0.0.1", port=6653)
     net.start()
+
+    net.get("s3").intf("s3-eth1").setMAC("00:00:00:00:01:01")
+    net.get("s3").intf("s3-eth2").setMAC("00:00:00:00:01:02")
+    net.get("s3").intf("s3-eth3").setMAC("00:00:00:00:01:03")
+
     CLI(net)
     net.stop()
 
-if __name__ == '__main__':
-    setLogLevel('info')
+
+if __name__ == "__main__":
+    setLogLevel("info")
     run()
