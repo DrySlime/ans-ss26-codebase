@@ -6,11 +6,10 @@
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
-from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3, ether
 from ryu.lib.packet import packet, ethernet, arp, ipv4, icmp, in_proto
 import ipaddress # perfect for bit logical operations on IP addresses and subnet masks, e.g., for LPM lookups
+from packet_debugger import PacketDebugger
 
 
 class Router(app_manager.RyuApp):
@@ -18,34 +17,27 @@ class Router(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(Router, self).__init__(*args, **kwargs)
-        self.port_to_own_mac = {
-            1: "00:00:00:00:01:01",
-            2: "00:00:00:00:01:02",
-            3: "00:00:00:00:01:03"
-        }
-        self.port_to_own_ip = {
-            1: "10.0.1.1",
-            2: "10.0.2.1",
-            3: "192.168.1.1"
+        self.debugger = PacketDebugger(self.logger)
+        self.router_configs = {
+            3: { # Router 1 (DPID 3)
+                'macs': {1: "00:00:00:00:01:01", 2: "00:00:00:00:01:02", 3: "00:00:00:00:01:03"},
+                'ips': {1: "10.0.1.1", 2: "10.0.2.1", 3: "192.168.1.1"},
+                'routes': {
+                    ipaddress.IPv4Network("10.0.1.0/24"): 1,
+                    ipaddress.IPv4Network("10.0.2.0/24"): 2,
+                    ipaddress.IPv4Network("192.168.1.0/24"): 3
+                }
             }
-
-        # Router port (gateways) IP addresses assumed by the controller
-        self.routing_table = {
-            ipaddress.IPv4Network("10.0.1.0/24"): 1,
-            ipaddress.IPv4Network("10.0.2.0/24"): 2,
-            ipaddress.IPv4Network("192.168.1.0/24"): 3
-        }
-        self.arp_table = {}
+        }        
+        self.arp_table = {}# Struktur: {dpid: {ip: mac}}
         #buffer with the structure (ipaddress)(msg, in_port, out_port, pkt)
         self.pending_packets = {}
-        self.mac_to_port = {} # our CAM table \ Content Addressable Memory
 
-    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def _flow_removed_handler(self, ev):
+        pass
+
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
-        # Nur Router-Datapath verarbeiten
-        if datapath.id != 3:
-            return
 
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -58,8 +50,6 @@ class Router(app_manager.RyuApp):
                                           ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
 
-        
-
     def add_flow(self, datapath, priority, match, actions):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -68,7 +58,6 @@ class Router(app_manager.RyuApp):
                                 match=match, instructions=inst)
         datapath.send_msg(mod)
 
-    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         #Chris NOTE: This handler will be called for every packet that matches the table-miss flow entry, 
         # i.e., for every packet that doesn't match any existing flow entry in the switch. 
@@ -77,32 +66,33 @@ class Router(app_manager.RyuApp):
         msg = ev.msg
         datapath = msg.datapath
         parser = datapath.ofproto_parser
-
-        # In this setup switch 3 is created last and will get the highest DPID (3), 
-        # so we can use this to filter out Packet-Ins from the non-router switches.
-        is_not_router = datapath.id != 3
-        if is_not_router:
-            return
-
+        dpid = datapath.id
+        self.arp_table.setdefault(dpid, {})
+        self.pending_packets.setdefault(dpid, {})
         #THis is the way I found to extract the incoming port.  
         in_port = msg.match['in_port']
 
+        # Debugging
+        self.debugger.trace(msg.data, datapath.id, "INGRESS", port=in_port)
 
         pkt = packet.Packet(msg.data)
         
         #This is a neat way to extract the different protocol layers from the packet. 
         # We can then check if the packet contains an ARP, IPv4, or Ethernet header and process
-        arp_pkt = pkt.get_protocol(arp.arp)
-        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
         eth_pkt = pkt.get_protocol(ethernet.ethernet)
 
-        #Self learning: eingehende Pakete auf Port X haben Quell-MAC Y -> speichere in ARP-Tabelle, dass Y über Port X erreichbar ist.
-        #self.arp_table[eth_pkt.src] = in_port
-        #self.add_flow(datapath, 1, parser.OFPMatch(eth_type=ether.ETH_TYPE_ARP, arp_spa=arp_pkt.src_ip), [parser.OFPActionOutput(in_port)])
+        if not eth_pkt:
+            return
 
-        # Chris NOTE: we check if the packet contains an ARP or IPv4 header and call the corresponding handler function.
-        if eth_pkt:
-            self.handle_ethernet_packet(eth_pkt, in_port, ev, pkt)
+        # 1. L2-Validierung: Router verarbeitet nur L2-Broadcasts oder Unicasts an sein eigenes Interface
+        router_mac = self.router_configs[dpid]['macs'].get(in_port)
+        if eth_pkt.dst != 'ff:ff:ff:ff:ff:ff' and eth_pkt.dst != router_mac:
+            # Paket ignorieren (Drop), da es auf L2 nicht an den Router adressiert ist. 
+            return
+
+        arp_pkt = pkt.get_protocol(arp.arp)
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+
         if arp_pkt:
             self.handle_arp_packet(arp_pkt, in_port, ev, pkt)
         if ipv4_pkt:
@@ -110,12 +100,13 @@ class Router(app_manager.RyuApp):
     
     def apply_security_policy(self, datapath):
         parser = datapath.ofproto_parser
+        dpid = datapath.id
 
         # 1. Dynamische Extraktion als IPv4Network-Objekte
-        ext_net_obj = next(net for net, port in self.routing_table.items() if port == 3)# WAN 
-        ser_net_obj = next(net for net, port in self.routing_table.items() if port == 2)# Servernet
+        ext_net_obj = next(net for net, port in self.router_configs[dpid]['routes'].items() if port == 3)# WAN 
+        ser_net_obj = next(net for net, port in self.router_configs[dpid]['routes'].items() if port == 2)# Servernet
 
-        int_net_objs = [net for net, port in self.routing_table.items() if port in (1, 2)]# LANs
+        int_net_objs = [net for net, port in self.router_configs[dpid]['routes'].items() if port in (1, 2)]# LANs
 
         # 2. Konvertierung in Ryu-kompatible String-Tupel ("Netzwerk-IP", "Subnetzmaske")
         ext_net = (str(ext_net_obj.network_address), str(ext_net_obj.netmask))
@@ -154,8 +145,8 @@ class Router(app_manager.RyuApp):
         # --- C) Hardware-Offloading für Gateway-Schutz ---
         # Iteriere über alle Router-Ports. Installiere eine Drop-Regel für jeden Ingress-Port, 
         # wenn die Ziel-IP der IP eines *anderen* Router-Ports entspricht.
-        for in_port, _ in self.port_to_own_ip.items():
-            for other_port, other_ip in self.port_to_own_ip.items():
+        for in_port, _ in self.router_configs[dpid]['ips'].items():
+            for other_port, other_ip in self.router_configs[dpid]['ips'].items():
                 if in_port != other_port:
                     match_gw_drop = parser.OFPMatch(
                         in_port=in_port,
@@ -166,64 +157,21 @@ class Router(app_manager.RyuApp):
                     )
                     self.add_flow(datapath, 100, match_gw_drop, [])
 
-    def handle_ethernet_packet(self, eth_pkt, in_port, ev, pkt):
-        # thats the code from the ans_switch.py
-        msg = ev.msg
-        datapath = msg.datapath
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-        dpid = datapath.id
-
-        # die MACs Layer 2
-        dst = eth_pkt.dst
-        src = eth_pkt.src
-
-        # 1. MAC-Learning (Source MAC -> Ingress Port)
-        self.mac_to_port.setdefault(dpid, {})
-        self.mac_to_port[dpid][src] = in_port
-
-        # 2. Forwarding Entscheidung
-        if dst in self.mac_to_port[dpid]:
-            out_port = self.mac_to_port[dpid][dst]
-            
-            # 3. Flow Rule Installation (NUR für Unicast)
-            # Wir matchen auf die Ziel-MAC, um den Controller für diesen Flow künftig zu entlasten.
-            match = parser.OFPMatch(eth_dst=dst)
-            actions = [parser.OFPActionOutput(out_port)]
-            
-            # Priority > 0, um den Table-Miss Flow (0) zu überschreiben
-            self.add_flow(datapath, 10, match, actions)
-        else:
-            # Destination unbekannt -> Flooding
-            out_port = ofproto.OFPP_FLOOD
-            actions = [parser.OFPActionOutput(out_port)]
-
-        # 4. Packet-Out (für das aktuelle Paket im Controller)
-        data = None
-        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-            data = msg.data
-
-        out = parser.OFPPacketOut(
-            datapath=datapath, 
-            buffer_id=msg.buffer_id,
-            in_port=in_port, 
-            actions=actions, 
-            data=data
-        )
-        datapath.send_msg(out)
-
     def handle_arp_packet(self, arp_pkt, in_port, ev, pkt):
         # 1. ARP Request/Reply learning: IP in MAC translate and save
-        self.arp_table[arp_pkt.src_ip] = arp_pkt.src_mac
         
         msg = ev.msg
         datapath = msg.datapath
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
+        dpid = datapath.id  
+
+        if dpid not in self.arp_table:
+            self.arp_table[dpid] = {}
+        self.arp_table[dpid][arp_pkt.src_ip] = arp_pkt.src_mac
+
         eth_pkt = pkt.get_protocol(ethernet.ethernet)
 
         is_arp_request = arp_pkt.opcode == arp.ARP_REQUEST
-        is_arp_intended_for_router = arp_pkt.dst_ip == self.port_to_own_ip.get(in_port)
+        is_arp_intended_for_router = arp_pkt.dst_ip == self.router_configs[dpid]['ips'].get(in_port)
         is_arp_response = arp_pkt.opcode == arp.ARP_REPLY
 
         # If the ARP request is for the router's own IP, we need to reply with an ARP response identifying us.
@@ -240,11 +188,12 @@ class Router(app_manager.RyuApp):
     def _send_pending_packets(self, src_ip, dst_mac):
         for queued_msg, q_in_port, q_out_port, q_pkt in self.pending_packets[src_ip]:
             datapath = queued_msg.datapath
+            dpid = datapath.id
             ofproto = datapath.ofproto
             parser = datapath.ofproto_parser
             q_eth = q_pkt.get_protocol(ethernet.ethernet)
             q_ipv4 = q_pkt.get_protocol(ipv4.ipv4)
-            src_mac = self.port_to_own_mac[q_out_port]
+            src_mac = self.router_configs[dpid]['macs'].get(q_out_port)
             
             actions = [
                 parser.OFPActionSetField(eth_src=src_mac),
@@ -276,8 +225,11 @@ class Router(app_manager.RyuApp):
 
     def _send_arp_reply(self, datapath, in_port, arp_pkt, eth_pkt):
         #based on the incoming port, we determine the router's own MAC and IP address that we need to use in the ARP reply.
-        router_mac = self.port_to_own_mac.get(in_port)
-        router_ip = self.port_to_own_ip.get(in_port)
+        dpid = datapath.id
+        config = self.router_configs[dpid]
+        
+        router_mac = config['macs'].get(in_port)
+        router_ip = config['ips'].get(in_port)
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
@@ -326,10 +278,8 @@ class Router(app_manager.RyuApp):
     def handle_ipv4_packet(self, ipv4_pkt, in_port, ev, pkt):
         msg = ev.msg
         datapath = msg.datapath
-        ofproto = datapath.ofproto
+        dpid = datapath.id
         parser = datapath.ofproto_parser
-        #Chris NOTE: we need the ethernet header to modify the src/dst MAC addresses for forwarding, so we extract it here as well.
-        eth_pkt = pkt.get_protocol(ethernet.ethernet)
 
         src_ip = ipv4_pkt.src
         dst_ip = ipv4_pkt.dst
@@ -353,43 +303,56 @@ class Router(app_manager.RyuApp):
                 
                 if ext_to_int or int_to_ext:
                     self.logger.info(f"Security Policy: Drop ICMP Echo Request {src_ip} -> {dst_ip}")
+                    # Push reactive drop flow to hardware
+                    match = parser.OFPMatch(
+                        eth_type=ether.ETH_TYPE_IP, 
+                        ip_proto=in_proto.IPPROTO_ICMP,
+                        ipv4_src=src_ip, 
+                        ipv4_dst=dst_ip
+                    )
+                    self.add_flow(datapath, 100, match, []) # Leere Action = DROP
                     return  # Packet Drop
         
         # 2.1 LPM Routing lookup
         out_port = None
-        out_port = self.find_longest_prefix_match(dst_ip)
+        out_port = self.find_longest_prefix_match(dpid, dst_ip)
 
         # 2.2 If no route found, drop packet
         if out_port is None:
             self.logger.info("Keine Route für %s gefunden. Dropping packet.", dst_ip)
             return
+        
+        if dst_ip in self.router_configs[dpid]['ips'].values():
+            self.handle_icmp_echo_request(ipv4_pkt, in_port, datapath, pkt)
+            return #
 
         # Prüfe Next-Hop MAC in ARP-Tabelle
-        if dst_ip in self.arp_table:
+        if dst_ip in self.arp_table[dpid]:
             self._send_pkt_next_hop(datapath, msg, dst_ip, in_port, out_port, pkt)
         # 2.3 Next-Hop MAC unbekannt: ARP Request generieren und Paket puffern
         else:
             # MAC unbekannt: Generiere ARP Request für Next-Hop
             # Paket puffern
-            if dst_ip not in self.pending_packets:
-                # destination ip gets his own queue
-                self.pending_packets[dst_ip] = []
-                # Sende ARP Request nur beim ersten Paket für diese IP
-                self._send_arp_request(datapath, out_port, dst_ip)
-                self.logger.info(f"MAC für {dst_ip} unbekannt, ARP Request gesendet auf Port {out_port}")
-            
-            self.pending_packets[dst_ip].append((msg, in_port, out_port, pkt))
+            if dst_ip in self.arp_table[datapath.id]:
+                self._send_pkt_next_hop(datapath, msg, dst_ip, in_port, out_port, pkt)
+            else:
+                if dst_ip not in self.pending_packets[datapath.id]:
+                    self.pending_packets[datapath.id][dst_ip] = []
+                    self._send_arp_request(datapath, out_port, dst_ip)
+                
+                self.pending_packets[datapath.id][dst_ip].append((msg, in_port, out_port, pkt))
             
         # Someone is trying to ping the router itself, we should reply with an ICMP Echo Reply if it's an Echo Request.   
-        if dst_ip == self.port_to_own_ip.get(in_port):
+        if dst_ip == self.router_configs[dpid]['ips'].get(in_port):
             self.handle_icmp_echo_request(ipv4_pkt, in_port, datapath, pkt)
             return
 
     def _send_pkt_next_hop(self, datapath, msg, dst_ip, in_port, out_port, pkt):
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
-        dst_mac = self.arp_table[dst_ip]
-        src_mac = self.port_to_own_mac[out_port]
+        dpid = datapath.id
+        dst_mac = self.arp_table[dpid][dst_ip]
+        src_mac = self.router_configs[dpid]['macs'][out_port]
         eth_pkt = pkt.get_protocol(ethernet.ethernet)
         ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
 
@@ -436,14 +399,14 @@ class Router(app_manager.RyuApp):
         else:
             self.logger.info(f"IPv4 traffic to router IP {dst_ip} ignored (not ICMP Echo Request).")
         
-
-    def find_longest_prefix_match(self, dst_ip):
+    def find_longest_prefix_match(self, dpid, dst_ip):
         #Chris NOTE: we iterate through the routing table and check if the destination IP falls within any of the CIDR blocks. If it does, we check if it's the longest prefix match so far. If it is, we remember that as our best match and the corresponding output port.
         best_match = None
         out_port = None
         dst_ip_obj = ipaddress.IPv4Address(dst_ip)
+        routes = self.router_configs[dpid]['routes']
 
-        for net, port in self.routing_table.items():
+        for net, port in routes.items():
             # Chris NOTE: the ipaddress module allows us to easily check if an IP address belongs to a network using the 'in' operator, which internally handles the bitwise operations needed for CIDR matching.
             if dst_ip_obj in net:
                 # ersten eintrag mit longest prefix match merken und dann prefixlänge vergleichen, um den genausten match zu finden
@@ -456,13 +419,14 @@ class Router(app_manager.RyuApp):
     def send_icmp_reply(self, datapath, port, eth_pkt, ipv4_pkt, icmp_pkt):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+        dpid = datapath.id
         
         reply_pkt = packet.Packet()
         
         # 1. Ethernet Header (Src/Dst vertauschen, Egress MAC setzen)
         eth_reply = ethernet.ethernet(
             dst=eth_pkt.src,
-            src=self.port_to_own_mac[port],
+            src=self.router_configs[dpid]['macs'].get(port),
             ethertype=ether.ETH_TYPE_IP
         )
         reply_pkt.add_protocol(eth_reply)
@@ -470,7 +434,7 @@ class Router(app_manager.RyuApp):
         # 2. IPv4 Header (Src/Dst vertauschen)
         ipv4_reply = ipv4.ipv4(
             dst=ipv4_pkt.src,
-            src=self.port_to_own_ip[port],
+            src=self.router_configs[dpid]['ips'].get(port),
             proto=ipv4_pkt.proto
         )
         reply_pkt.add_protocol(ipv4_reply)
@@ -501,8 +465,9 @@ class Router(app_manager.RyuApp):
         parser = datapath.ofproto_parser
         
         # Lokale Router-Parameter für den Egress-Port bestimmen
-        src_mac = self.port_to_own_mac[out_port]
-        src_ip = self.port_to_own_ip[out_port]
+        dpid = datapath.id
+        src_mac = self.router_configs[dpid]['macs'].get(out_port)
+        src_ip = self.router_configs[dpid]['ips'].get(out_port)
         
         # Paket-Instanz initialisieren
         pkt = packet.Packet()

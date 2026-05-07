@@ -6,10 +6,9 @@
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
-from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3, ether
 from ryu.lib.packet import packet, ethernet, arp, ipv4
+from packet_debugger import PacketDebugger
 
 # Chris NOTE: Efectively we intent to implement a simple CAM table learning switch
 
@@ -19,16 +18,11 @@ class LearningSwitch(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(LearningSwitch, self).__init__(*args, **kwargs)
         self.mac_to_port = {} # our CAM table \ Content Addressable Memory
-        print("LearningSwitch Ryu App initialized.")
+        print("LearningSwitch Ryu App initialized.")        
+        self.debugger = PacketDebugger(self.logger)
 
-    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
-        
-        # Ignoriere den Router-Datapath
-        is_router = datapath.id == 3
-        if is_router:
-            return
 
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -55,36 +49,21 @@ class LearningSwitch(app_manager.RyuApp):
         datapath.send_msg(mod)
 
     # Chris NOTE: This handler will be called when a flow entry expires (idle_timeout) or is removed (hard_timeout) and will be used to clean up our CAM table entries.
-    @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
     def _flow_removed_handler(self, ev):
-        msg = ev.msg
-        dpid = msg.datapath.id
-        
-        # Extraktion der Ziel-MAC aus dem Match der abgelaufenen Regel
-        mac = msg.match.get('eth_dst') 
-        
-        if dpid in self.mac_to_port and mac in self.mac_to_port[dpid]:
-            self.logger.info(f"Flow expired: Removing MAC {mac} from DPID {dpid}")
-            del self.mac_to_port[dpid][mac]
+        pass
 
-    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         # Chris NOTE: You can find this code snippet https://osrg.github.io/ryu-book/en/html/switching_hub.html.
         msg = ev.msg
         datapath = msg.datapath
         dpid = datapath.id
-        # Router-Traffic ignorieren
-        if dpid == 3:
-            return
 
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        self.mac_to_port.setdefault(dpid, {})
-
         pkt = packet.Packet(msg.data)
         eth_pkt = pkt.get_protocol(ethernet.ethernet)
-        
+
         # Chris NOTE: We extract the source and destination MAC address...
         if not eth_pkt:
             return
@@ -92,6 +71,9 @@ class LearningSwitch(app_manager.RyuApp):
         dst = eth_pkt.dst
         src = eth_pkt.src
         in_port = msg.match['in_port']
+        
+        # Debugging
+        self.debugger.trace(msg.data, datapath.id, "INGRESS", port=in_port)
 
         #self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
 
@@ -101,6 +83,7 @@ class LearningSwitch(app_manager.RyuApp):
         # '00:00:00:00:00:01': 1, # Host A ist an Port 1
         # '00:00:00:00:00:02': 2  # Host B ist an Port 2
         # }
+        self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
 
         if dst in self.mac_to_port[dpid]:
