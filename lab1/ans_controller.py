@@ -25,8 +25,7 @@ class MainController(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
-        dpid = ev.msg.datapath.id
-        
+        dpid = ev.msg.datapath.id        
         if dpid == 3:
             self.router_logic.switch_features_handler(ev)
         else:
@@ -39,7 +38,6 @@ class MainController(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 match=match, instructions=inst)
         datapath.send_msg(mod)
-
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):

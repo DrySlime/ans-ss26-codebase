@@ -5,7 +5,6 @@
  """
 
 from ryu.base import app_manager
-from ryu.controller import ofp_event
 from ryu.ofproto import ofproto_v1_3, ether
 from ryu.lib.packet import packet, ethernet, arp, ipv4, icmp, in_proto
 import ipaddress # perfect for bit logical operations on IP addresses and subnet masks, e.g., for LPM lookups or later hostmask in Datacenters
@@ -180,15 +179,14 @@ class Router(app_manager.RyuApp):
         elif is_arp_response:
             # Gepufferte Pakete abrufen und weiterleiten
             # if there is a queue for the source ip          
-            if arp_pkt.src_ip in self.pending_packets:
+            if arp_pkt.src_ip in self.pending_packets[dpid]:
                     dst_mac = arp_pkt.src_mac                
-                    self._send_pending_packets(arp_pkt.src_ip, dst_mac)                        
-                    del self.pending_packets[arp_pkt.src_ip]
+                    self._send_pending_packets(dpid, arp_pkt.src_ip, dst_mac)                        
+                    del self.pending_packets[dpid][arp_pkt.src_ip]
 
-    def _send_pending_packets(self, src_ip, dst_mac):
-        for queued_msg, q_in_port, q_out_port, q_pkt in self.pending_packets[src_ip]:
+    def _send_pending_packets(self, dpid, src_ip, dst_mac):
+        for queued_msg, q_in_port, q_out_port, q_pkt in self.pending_packets[dpid][src_ip]:
             datapath = queued_msg.datapath
-            dpid = datapath.id
             ofproto = datapath.ofproto
             parser = datapath.ofproto_parser
             q_eth = q_pkt.get_protocol(ethernet.ethernet)
@@ -292,14 +290,20 @@ class Router(app_manager.RyuApp):
                 src_ip_obj = ipaddress.IPv4Address(src_ip)
                 dst_ip_obj = ipaddress.IPv4Address(dst_ip)
                 
-                ext_net = ipaddress.IPv4Network("192.168.1.0/24")
-                int_nets = [ipaddress.IPv4Network("10.0.1.0/24"), ipaddress.IPv4Network("10.0.2.0/24")]
+                # Dynamische Extraktion aus dem State Dictionary
+                routes = self.router_configs[dpid]['routes']
+
+                # WAN-Netzwerk extrahieren (Zielport 3)
+                ext_nets = [net for net, port in routes.items() if port == 3]
+
+                # Interne LAN-Netzwerke extrahieren (Zielports 1 und 2)
+                int_nets = [net for net, port in routes.items() if port in (1, 2)]
                 
                 # Bedingung 1: ext pingt intern
-                ext_to_int = src_ip_obj in ext_net and any(dst_ip_obj in net for net in int_nets)
+                ext_to_int = any(src_ip_obj in net for net in ext_nets) and any(dst_ip_obj in net for net in int_nets)
                 
                 # Bedingung 2: intern pingt ext
-                int_to_ext = any(src_ip_obj in net for net in int_nets) and dst_ip_obj in ext_net
+                int_to_ext = any(src_ip_obj in net for net in int_nets) and any(dst_ip_obj in net for net in ext_nets)
                 
                 if ext_to_int or int_to_ext:
                     self.logger.info(f"Security Policy: Drop ICMP Echo Request {src_ip} -> {dst_ip}")
@@ -333,14 +337,14 @@ class Router(app_manager.RyuApp):
         else:
             # MAC unbekannt: Generiere ARP Request für Next-Hop
             # Paket puffern
-            if dst_ip in self.arp_table[datapath.id]:
+            if dst_ip in self.arp_table[dpid]:
                 self._send_pkt_next_hop(datapath, msg, dst_ip, in_port, out_port, pkt)
             else:
-                if dst_ip not in self.pending_packets[datapath.id]:
-                    self.pending_packets[datapath.id][dst_ip] = []
+                if dst_ip not in self.pending_packets[dpid]:
+                    self.pending_packets[dpid][dst_ip] = []
                     self._send_arp_request(datapath, out_port, dst_ip)
                 
-                self.pending_packets[datapath.id][dst_ip].append((msg, in_port, out_port, pkt))
+                self.pending_packets[dpid][dst_ip].append((msg, in_port, out_port, pkt))
             
         # Someone is trying to ping the router itself, we should reply with an ICMP Echo Reply if it's an Echo Request.   
         if dst_ip == self.router_configs[dpid]['ips'].get(in_port):
