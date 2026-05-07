@@ -110,17 +110,8 @@ class Router(app_manager.RyuApp):
         # 2. Konvertierung in Ryu-kompatible String-Tupel ("Netzwerk-IP", "Subnetzmaske")
         ext_net = (str(ext_net_obj.network_address), str(ext_net_obj.netmask))
         ser_net = (str(ser_net_obj.network_address), str(ser_net_obj.netmask))
-        int_nets = [(str(net.network_address), str(net.netmask)) for net in int_net_objs]
+#        int_nets = [(str(net.network_address), str(net.netmask)) for net in int_net_objs]
 
-        # --- Proaktive ICMP Sperre für ext -> intern ---
-        for int_net in int_nets:
-            match = parser.OFPMatch(
-                eth_type=ether.ETH_TYPE_IP,
-                ip_proto=in_proto.IPPROTO_ICMP,
-                ipv4_src=ext_net,
-                ipv4_dst=int_net
-            )
-            self.add_flow(datapath, 100, match, []) # Action leer = DROP
 
         # --- Proaktive TCP/UDP Sperre ext <-> ser ---
         for proto in [in_proto.IPPROTO_TCP, in_proto.IPPROTO_UDP]:
@@ -272,6 +263,62 @@ class Router(app_manager.RyuApp):
         )
         
         datapath.send_msg(out)
+    def send_icmp_prohibited(self, datapath, port, original_pkt, eth_pkt, ipv4_pkt):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        dpid = datapath.id
+        
+        reply_pkt = packet.Packet()
+        
+        # 1. Ethernet Header (Zurück an den Sender)
+        eth_reply = ethernet.ethernet(
+            dst=eth_pkt.src,
+            src=self.router_configs[dpid]['macs'].get(port),
+            ethertype=ether.ETH_TYPE_IP
+        )
+        reply_pkt.add_protocol(eth_reply)
+        
+        # 2. IPv4 Header (Vom Router an den Sender)
+        ipv4_reply = ipv4.ipv4(
+            dst=ipv4_pkt.src,
+            src=self.router_configs[dpid]['ips'].get(port),
+            proto=in_proto.IPPROTO_ICMP
+        )
+        reply_pkt.add_protocol(ipv4_reply)
+        
+        # 3. ICMP Payload: Type 3 (Dest Unreachable), Code 13 (Admin Prohibited)
+        # Wir extrahieren die relevanten Bytes aus dem Original-Paket (IP Header + 8 Bytes) für das RFC-konforme Error-Payload
+        eth_offset = 14
+        if eth_pkt.ethertype == ether.ETH_TYPE_8021Q:
+            eth_offset = 18
+            
+        # 2. Variable IPv4-Header-Länge ermitteln (IHL * 32-Bit Words)
+        ip_hlen = ipv4_pkt.header_length * 4
+        
+        # 3. RFC 792 Extraction: IP-Header + erste 8 Bytes des ICMP-Payloads aus dem Raw-Buffer
+        orig_ip_bytes = original_pkt.data[eth_offset : eth_offset + ip_hlen + 8]
+        
+        unreach_data = icmp.dest_unreach(data_len=len(orig_ip_bytes), data=orig_ip_bytes)
+        
+        icmp_reply = icmp.icmp(
+            type_=icmp.ICMP_DEST_UNREACH, # Type 3
+            code=13, # Code 13 admin prohibited
+            csum=0,
+            data=unreach_data
+        )
+        reply_pkt.add_protocol(icmp_reply)
+        reply_pkt.serialize()
+        
+        # 4. Packet-Out Konstruktion
+        actions = [parser.OFPActionOutput(port)]
+        out = parser.OFPPacketOut(
+            datapath=datapath,
+            buffer_id=ofproto.OFP_NO_BUFFER,
+            in_port=ofproto.OFPP_CONTROLLER,
+            actions=actions,
+            data=reply_pkt.data
+        )
+        datapath.send_msg(out)
 
     def handle_ipv4_packet(self, ipv4_pkt, in_port, ev, pkt):
         msg = ev.msg
@@ -307,14 +354,7 @@ class Router(app_manager.RyuApp):
                 
                 if ext_to_int or int_to_ext:
                     self.logger.info(f"Security Policy: Drop ICMP Echo Request {src_ip} -> {dst_ip}")
-                    # Push reactive drop flow to hardware
-                    match = parser.OFPMatch(
-                        eth_type=ether.ETH_TYPE_IP, 
-                        ip_proto=in_proto.IPPROTO_ICMP,
-                        ipv4_src=src_ip, 
-                        ipv4_dst=dst_ip
-                    )
-                    self.add_flow(datapath, 100, match, []) # Leere Action = DROP
+                    self.send_icmp_prohibited(datapath, in_port, pkt, pkt.get_protocol(ethernet.ethernet), ipv4_pkt)
                     return  # Packet Drop
         
         # 2.1 LPM Routing lookup
