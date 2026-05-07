@@ -8,7 +8,7 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.ofproto import ofproto_v1_3, ether
 from ryu.lib.packet import packet, ethernet, arp, ipv4, icmp, in_proto
-import ipaddress # perfect for bit logical operations on IP addresses and subnet masks, e.g., for LPM lookups
+import ipaddress # perfect for bit logical operations on IP addresses and subnet masks, e.g., for LPM lookups or later hostmask in Datacenters
 from packet_debugger import PacketDebugger
 
 
