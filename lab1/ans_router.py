@@ -110,7 +110,7 @@ class Router(app_manager.RyuApp):
         # 2. Konvertierung in Ryu-kompatible String-Tupel ("Netzwerk-IP", "Subnetzmaske")
         ext_net = (str(ext_net_obj.network_address), str(ext_net_obj.netmask))
         ser_net = (str(ser_net_obj.network_address), str(ser_net_obj.netmask))
-#        int_nets = [(str(net.network_address), str(net.netmask)) for net in int_net_objs]
+        #int_nets = [(str(net.network_address), str(net.netmask)) for net in int_net_objs]
 
 
         # --- Proaktive TCP/UDP Sperre ext <-> ser ---
@@ -353,7 +353,24 @@ class Router(app_manager.RyuApp):
                     self.logger.info(f"Security Policy: Drop ICMP Echo Request {src_ip} -> {dst_ip}")
                     self.send_icmp_prohibited(datapath, in_port, pkt, pkt.get_protocol(ethernet.ethernet), ipv4_pkt)
                     return  # Packet Drop
-        
+                
+        # Chris NOTE: Den blockierten TCP/UDP Traffic Pakete hier abfangen und senden den geforderten ICMP Prohibited.
+        if ipv4_pkt.proto in (in_proto.IPPROTO_TCP, in_proto.IPPROTO_UDP):
+            src_ip_obj = ipaddress.IPv4Address(src_ip)
+            dst_ip_obj = ipaddress.IPv4Address(dst_ip)
+            
+            routes = self.router_configs[dpid]['routes']
+            ext_nets = [net for net, port in routes.items() if port == 3]
+            ser_nets = [net for net, port in routes.items() if port == 2]
+            
+            ext_to_ser = any(src_ip_obj in net for net in ext_nets) and any(dst_ip_obj in net for net in ser_nets)
+            ser_to_ext = any(src_ip_obj in net for net in ser_nets) and any(dst_ip_obj in net for net in ext_nets)
+            
+            if ext_to_ser or ser_to_ext:
+                #self.logger.info(f"Security Policy: Reject TCP/UDP {src_ip} -> {dst_ip} (Admin Prohibited)")
+                self.send_icmp_prohibited(datapath, in_port, pkt, pkt.get_protocol(ethernet.ethernet), ipv4_pkt)
+                return  #Verhindert das weitere Routing dieses Pakets.
+
         # 2.1 LPM Routing lookup
         out_port = None
         out_port = self.find_longest_prefix_match(dpid, dst_ip)
