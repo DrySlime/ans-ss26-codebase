@@ -29,7 +29,7 @@ class Router(app_manager.RyuApp):
             }
         }        
         self.arp_table = {}# Struktur: {dpid: {ip: mac}}
-        #buffer with the structure (ipaddress)(msg, in_port, out_port, pkt)
+        #buffer with the structure {dpid: {ipaddress: (msg, in_port, out_port, pkt)}}
         self.pending_packets = {}
 
     def _flow_removed_handler(self, ev):
@@ -197,10 +197,6 @@ class Router(app_manager.RyuApp):
             
             data = None
             if queued_msg.buffer_id == ofproto.OFP_NO_BUFFER:
-                q_eth.src = src_mac
-                q_eth.dst = dst_mac
-                q_ipv4.ttl -= 1
-                q_pkt.serialize()
                 data = q_pkt.data
                 
             out = parser.OFPPacketOut(
@@ -300,6 +296,7 @@ class Router(app_manager.RyuApp):
         
         unreach_data = icmp.dest_unreach(data_len=len(orig_ip_bytes), data=orig_ip_bytes)
         
+        #Check this out https://www.iana.org/assignments/icmp-parameters/icmp-parameters.xhtml#icmp-parameters-codes-3
         icmp_reply = icmp.icmp(
             type_=icmp.ICMP_DEST_UNREACH, # Type 3
             code=13, # Code 13 admin prohibited
