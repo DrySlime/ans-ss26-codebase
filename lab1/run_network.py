@@ -73,7 +73,10 @@ def run():
         #Chris NOTE: we see 6653 in the original Lab1 Figure 1 but in the lab description it is 6633. Just sayng
         port=6653)
     net.start()
-    CLI(net)
+    try:
+        CLI(net)
+    except Exception as e:
+        print(f"\n[!] CLI Crash abgefangen: {e}")
     net.stop()
 
 if __name__ == '__main__':
