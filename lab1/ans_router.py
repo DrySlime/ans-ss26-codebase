@@ -112,26 +112,6 @@ class Router(app_manager.RyuApp):
         ser_net = (str(ser_net_obj.network_address), str(ser_net_obj.netmask))
         #int_nets = [(str(net.network_address), str(net.netmask)) for net in int_net_objs]
 
-
-        # --- Proaktive TCP/UDP Sperre ext <-> ser ---
-        for proto in [in_proto.IPPROTO_TCP, in_proto.IPPROTO_UDP]:
-            # Richtung: ext -> ser
-            match_ext_to_ser = parser.OFPMatch(
-                eth_type=ether.ETH_TYPE_IP,
-                ip_proto=proto,
-                ipv4_src=ext_net,
-                ipv4_dst=ser_net
-            )
-            self.add_flow(datapath, 100, match_ext_to_ser, [])
-
-            # Richtung: ser -> ext
-            match_ser_to_ext = parser.OFPMatch(
-                eth_type=ether.ETH_TYPE_IP,
-                ip_proto=proto,
-                ipv4_src=ser_net,
-                ipv4_dst=ext_net
-            )
-            self.add_flow(datapath, 100, match_ser_to_ext, [])
         # --- C) Hardware-Offloading für Gateway-Schutz ---
         # Iteriere über alle Router-Ports. Installiere eine Drop-Regel für jeden Ingress-Port, 
         # wenn die Ziel-IP der IP eines *anderen* Router-Ports entspricht.
@@ -430,11 +410,7 @@ class Router(app_manager.RyuApp):
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             # Modifiziere Header im Puffer des Controllers
-            eth_pkt.src = src_mac
-            eth_pkt.dst = dst_mac
-            ipv4_pkt.ttl -= 1
-            pkt.serialize()
-            data = pkt.data
+           data = msg.data
 
         out = parser.OFPPacketOut(
             datapath=datapath, 
