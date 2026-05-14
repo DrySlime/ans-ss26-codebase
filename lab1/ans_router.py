@@ -113,9 +113,14 @@ class Router(app_manager.RyuApp):
         ser_net = (str(ser_net_obj.network_address), str(ser_net_obj.netmask))
         #int_nets = [(str(net.network_address), str(net.netmask)) for net in int_net_objs]
 
-        # --- A) Punting-Regeln für TCP/UDP (Prio 100) ---
+        # 3. Diese pakete sind laut Sicherheitsrichtlinie verboten, 
+        # wir installieren also eine Regel mit hoher Priorität, 
+        # die diese Pakete an den Controller puntet, 
+        # damit wir sie dort richtig bearbeiten und beantworten können.
+        # Damit gehen wir sicher, dass nicht eine flowrule generiert wird, die den verbotenen Traffic einfach durchlässt, 
+        # sondern dass wir die volle Kontrolle über die Behandlung dieser Pakete im Controller behalten.
         punt_actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
-
+        # --- A) Punting-Regeln für TCP/UDP (Prio 100) ---
         for proto in [in_proto.IPPROTO_TCP, in_proto.IPPROTO_UDP]:
             # ext -> ser blockieren und an Controller übergeben
             match_ext_to_ser = parser.OFPMatch(
@@ -136,7 +141,7 @@ class Router(app_manager.RyuApp):
             self.add_flow(datapath, 100, match_ser_to_ext, punt_actions)
 
         # --- B) Hardware-Offloading für Gateway-Schutz ---
-        # Iteriere über alle Router-Ports. Installiere eine Drop-Regel für jeden Ingress-Port, 
+        # Iteriere über alle Router-Ports. Installiere eine punt-Regel für jeden Ingress-Port, 
         # wenn die Ziel-IP der IP eines *anderen* Router-Ports entspricht.
         for in_port, _ in self.router_configs[dpid]['ips'].items():
             for other_port, other_ip in self.router_configs[dpid]['ips'].items():
@@ -262,6 +267,8 @@ class Router(app_manager.RyuApp):
         )
         
         datapath.send_msg(out)
+
+    # This function constructs and sends an ICMP Destination Unreachable message with Code 13 (Admin Prohibited) back to the sender of the original packet.
     def send_icmp_prohibited(self, datapath, port, original_pkt, eth_pkt, ipv4_pkt):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -314,7 +321,7 @@ class Router(app_manager.RyuApp):
         out = parser.OFPPacketOut(
             datapath=datapath,
             buffer_id=ofproto.OFP_NO_BUFFER,
-            in_port=ofproto.OFPP_CONTROLLER,
+            in_port=ofproto.OFPP_CONTROLLER, # der controller ist Ingress, da wir das Paket hier direkt aus dem Controller heraus generieren und das ziel des pakets in actions definieren.
             actions=actions,
             data=reply_pkt.data
         )
