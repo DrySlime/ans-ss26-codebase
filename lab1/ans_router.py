@@ -343,7 +343,7 @@ class Router(app_manager.RyuApp):
         )
         reply_pkt.add_protocol(ipv4_reply)
         
-        # 3. ICMP Payload: Type 3 (Dest Unreachable), Code 13 (Admin Prohibited)
+        # 3. ICMP Payload: Type 3 (Dest Unreachable), Code 0 (Network Unreachable)
         # Wir extrahieren die relevanten Bytes aus dem Original-Paket (IP Header + 8 Bytes) für das RFC-konforme Error-Payload
         eth_offset = 14
         if eth_pkt.ethertype == ether.ETH_TYPE_8021Q:
@@ -360,7 +360,7 @@ class Router(app_manager.RyuApp):
         #Check this out https://www.iana.org/assignments/icmp-parameters/icmp-parameters.xhtml#icmp-parameters-codes-3
         icmp_reply = icmp.icmp(
             type_=icmp.ICMP_DEST_UNREACH, # Type 3
-            code=0, # Code 13 admin prohibited
+            code=0, # Code 0 network unreachable
             csum=0,
             data=unreach_data
         )
@@ -418,15 +418,18 @@ class Router(app_manager.RyuApp):
                     self.send_icmp_prohibited(datapath, in_port, pkt, pkt.get_protocol(ethernet.ethernet), ipv4_pkt)
                     return  # Packet Drop
                 
+         # --- START: TCP/UDP Filter-Logik ---
         # Chris NOTE: Den blockierten TCP/UDP Traffic Pakete hier abfangen und senden den geforderten ICMP Prohibited.
         if ipv4_pkt.proto in (in_proto.IPPROTO_TCP, in_proto.IPPROTO_UDP):
             src_ip_obj = ipaddress.IPv4Address(src_ip)
             dst_ip_obj = ipaddress.IPv4Address(dst_ip)
             
+            # obtain routing table for this router (dpid)
             routes = self.router_configs[dpid]['routes']
             ext_nets = [net for net, port in routes.items() if port == 3]
             ser_nets = [net for net, port in routes.items() if port == 2]
             
+            # Check if the packet is going from external to server network or vice versa
             ext_to_ser = any(src_ip_obj in net for net in ext_nets) and any(dst_ip_obj in net for net in ser_nets)
             ser_to_ext = any(src_ip_obj in net for net in ser_nets) and any(dst_ip_obj in net for net in ext_nets)
             
@@ -445,6 +448,7 @@ class Router(app_manager.RyuApp):
             self.send_icmp_network_unreachable(datapath, in_port, pkt, eth_pkt, ipv4_pkt)
             return
         
+        # 2.3 Ziel-IP ist direkt an einem Router-Port angeschlossen: ICMP Echo Request erlauben, alle anderen Pakete verbieten
         if dst_ip in self.router_configs[dpid]['ips'].values():
             if dst_ip != self.router_configs[dpid]['ips'].get(in_port):
                 self.send_icmp_prohibited(datapath, in_port, pkt, eth_pkt, ipv4_pkt)
@@ -452,11 +456,12 @@ class Router(app_manager.RyuApp):
                 self.handle_icmp_echo_request(ipv4_pkt, in_port, datapath, pkt)
             return
 
+        #----------------------------Ab hier ist die normale Routing-Logik für Pakete, die nicht direkt an den Router adressiert sind.----------------------------
+
         # Prüfe Next-Hop MAC in ARP-Tabelle
         if dst_ip in self.arp_table[dpid]:
-            self._send_pkt_next_hop(datapath, msg, src_ip, dst_ip, in_port, out_port, pkt)
-        # 2.3 Next-Hop MAC unbekannt: ARP Request generieren und Paket puffern
-        else:
+            self._send_pkt_next_hop(datapath, msg, src_ip, dst_ip, in_port, out_port, pkt)        
+        else: # 2.4 Next-Hop MAC unbekannt: ARP Request generieren und Paket puffern
             if dst_ip not in self.pending_packets[dpid]:
                 self.pending_packets[dpid][dst_ip] = []
                 self._send_arp_request(datapath, out_port, dst_ip)  
@@ -474,8 +479,6 @@ class Router(app_manager.RyuApp):
         dpid = datapath.id
         dst_mac = self.arp_table[dpid][dst_ip]
         src_mac = self.router_configs[dpid]['macs'][out_port]
-        eth_pkt = pkt.get_protocol(ethernet.ethernet)
-        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
 
         # Actions für Forwarding: Src/Dst MAC umschreiben, TTL verringern, an out_port senden
         actions = [
