@@ -1,0 +1,35 @@
+Test                        |   Result          | True?
+----------------------------|-------------------|-----------------
+// Ping Policy              |                   |
+Pingall                     | ext -> X X X      |  Yes
+                            | h1 -> X h2 ser    |  Yes
+                            | h2 -> X h1 ser    |  Yes
+                            | er -> X h1 h2     |  Yes 
+----------------------------|-------------------|-----------------
+// Gateway Policy           |                   |
+h1 ping -c 1 10.0.1.1       |1 received         | Yes
+h2 ping -c 1 10.0.1.1       |1 received         | Yes
+ser ping -c 1 10.0.2.1      |1 received         | Yes
+ext ping -c 1 192.168.1.1   |1 received         | Yes
+h1 ping -c 1 10.0.2.1       |100% packet loss   | Yes
+h1 ping -c 1 192.168.1.1    |100% packet loss   | Yes    
+h2 ping -c 1 10.0.2.1       |100% packet loss   | Yes
+h2 ping -c 1 192.168.1.1    |100% packet loss   | Yes
+ser ping -c 1 10.0.1.1      |100% packet loss   | Yes
+ser ping -c 1 192.168.1.1   |100% packet loss   | Yes
+ext ping -c 1 10.0.1.1      |100% packet loss   | Yes
+ext ping -c 1 10.0.2.1      |100% packet loss   | Yes
+----------------------------|-------------------|-----------------
+// TCP/UDP Policy           |                   |
+iperf h1 h2                 |X.X Mbits/sec      | Yes
+iperf h1 ser                |X.X Mbits/sec      | Yes
+iperf h1 ext                |X.X Mbits/sec      | Yes
+iperf h2 ser                |X.X Mbits/sec      | Yes
+iperf h2 ext                |X.X Mbits/sec      | Yes
+iperf ext ser               |failed             | Yes
+iperf ser ext               |failed             | Yes
+iperfudp 10M h1 h2          |X.X Mbits/sec      | Yes
+iperfudp 10M h1 ser         |X.X Mbits/sec      | Yes
+iperfudp 10M h1 ext         |X.X Mbits/sec      | Yes
+iperfudp 10M ext ser        |failed             | Yes
+

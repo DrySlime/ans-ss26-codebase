@@ -35,23 +35,11 @@ class NetworkTopo(Topo):
 
         Topo.__init__(self)
 
-        self.h1 = self.addHost(
-            "h1", ip="10.0.1.2/24", defaultRoute="via 10.0.1.1", mac="00:00:00:00:00:01"
-        )
-        self.h2 = self.addHost(
-            "h2", ip="10.0.1.3/24", defaultRoute="via 10.0.1.1", mac="00:00:00:00:00:02"
-        )
-        self.ser = self.addHost(
-            "ser",
-            ip="10.0.2.2/24",
-            defaultRoute="via 10.0.2.1",
-            mac="00:00:00:00:00:10",
-        )
+        self.h1 = self.addHost("h1", ip="10.0.1.2/24", defaultRoute="via 10.0.1.1")
+        self.h2 = self.addHost("h2", ip="10.0.1.3/24", defaultRoute="via 10.0.1.1")
+        self.ser = self.addHost("ser", ip="10.0.2.2/24", defaultRoute="via 10.0.2.1")
         self.ext = self.addHost(
-            "ext",
-            ip="192.168.1.123/24",
-            defaultRoute="via 192.168.1.1",
-            mac="00:00:00:00:00:20",
+            "ext", ip="192.168.1.123/24", defaultRoute="via 192.168.1.1"
         )
 
         self.s1 = self.addSwitch("s1", cls=OVSKernelSwitch)
