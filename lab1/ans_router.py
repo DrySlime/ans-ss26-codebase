@@ -29,9 +29,10 @@ class Router(app_manager.RyuApp):
             }
         }        
         self.arp_table = {} # Struktur: {dpid: {ip: mac}}
-        # buffer with the structure {dpid: {ipaddress: (msg, in_port, out_port, pkt)}}
-        self.pending_packets = {}
+        self.pending_packets = {}# buffer with the structure {dpid: {ipaddress: (msg, in_port, out_port, pkt)}}
 
+
+    # I just implemented this because I was playn around with the Ryu API
     def _flow_removed_handler(self, ev):
         pass
 
@@ -55,71 +56,6 @@ class Router(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 match=match, instructions=inst)
         datapath.send_msg(mod)
-
-    # --- HELPER FUNKTIONEN FÜR PAKETGENERIERUNG UND DISPATCHING ---
-
-    def _send_packet_out(self, datapath, out_port, data, in_port=None):
-        """Kapselt das Versenden eines Pakets über einen spezifischen Port aus dem Controller."""
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-        in_port = in_port if in_port is not None else ofproto.OFPP_CONTROLLER
-        actions = [parser.OFPActionOutput(out_port)]
-        
-        out = parser.OFPPacketOut(
-            datapath=datapath,
-            buffer_id=ofproto.OFP_NO_BUFFER,
-            in_port=in_port,
-            actions=actions,
-            data=data
-        )
-        datapath.send_msg(out)
-
-    def _build_arp_packet(self, src_mac, dst_mac_eth, target_mac_arp, src_ip, dst_ip, opcode):
-        """Generiert generisch ARP-Requests oder -Replies als Byte-Array."""
-        pkt = packet.Packet()
-        eth_header = ethernet.ethernet(dst=dst_mac_eth, src=src_mac, ethertype=ether.ETH_TYPE_ARP)
-        arp_header = arp.arp(
-            hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4,
-            opcode=opcode, src_mac=src_mac, src_ip=src_ip, 
-            dst_mac=target_mac_arp, dst_ip=dst_ip
-        )
-        pkt.add_protocol(eth_header)
-        pkt.add_protocol(arp_header)
-        pkt.serialize()
-        return pkt.data
-
-    def _build_icmp_packet(self, src_mac, dst_mac, src_ip, dst_ip, icmp_type, icmp_code, icmp_data):
-        """Generiert generisch ICMP-Pakete (Echo Reply oder Errors) als Byte-Array."""
-        pkt = packet.Packet()
-        eth_header = ethernet.ethernet(dst=dst_mac, src=src_mac, ethertype=ether.ETH_TYPE_IP)
-        ip_header = ipv4.ipv4(dst=dst_ip, src=src_ip, proto=in_proto.IPPROTO_ICMP)
-        icmp_header = icmp.icmp(type_=icmp_type, code=icmp_code, csum=0, data=icmp_data)
-        
-        pkt.add_protocol(eth_header)
-        pkt.add_protocol(ip_header)
-        pkt.add_protocol(icmp_header)
-        pkt.serialize()
-        return pkt.data
-
-    def _generate_icmp_error(self, datapath, port, original_pkt, eth_pkt, ipv4_pkt, icmp_code):
-        """Zentrale Logik für ICMP Destination Unreachable Errors (Type 3) inkl. RFC 792 Payload-Extraktion."""
-        dpid = datapath.id
-        src_mac = self.router_configs[dpid]['macs'].get(port)
-        src_ip = self.router_configs[dpid]['ips'].get(port)
-
-        # RFC 792 Extraction: IP-Header + erste 8 Bytes des ICMP-Payloads aus dem Raw-Buffer
-        eth_offset = 18 if eth_pkt.ethertype == ether.ETH_TYPE_8021Q else 14
-        ip_hlen = ipv4_pkt.header_length * 4
-        orig_ip_bytes = original_pkt.data[eth_offset : eth_offset + ip_hlen + 8]
-        
-        unreach_data = icmp.dest_unreach(data_len=len(orig_ip_bytes), data=orig_ip_bytes)
-        
-        pkt_data = self._build_icmp_packet(
-            src_mac=src_mac, dst_mac=eth_pkt.src,
-            src_ip=src_ip, dst_ip=ipv4_pkt.src,
-            icmp_type=icmp.ICMP_DEST_UNREACH, icmp_code=icmp_code, icmp_data=unreach_data
-        )
-        self._send_packet_out(datapath, port, pkt_data)
 
     # --- CORE ROUTING LOGIK ---
 
@@ -214,6 +150,9 @@ class Router(app_manager.RyuApp):
         datapath = msg.datapath
         dpid = datapath.id  
 
+        # Chris NOTE: we learn the source IP and MAC address from every ARP packet we receive,
+        # regardless of whether it's a request or a reply. 
+        # This way, we can build up our ARP table over time and avoid unnecessary ARP requests for known hosts.
         self.arp_table[dpid][arp_pkt.src_ip] = arp_pkt.src_mac
 
         eth_pkt = pkt.get_protocol(ethernet.ethernet)
@@ -284,6 +223,7 @@ class Router(app_manager.RyuApp):
 
     def send_icmp_prohibited(self, datapath, port, original_pkt, eth_pkt, ipv4_pkt):
         # Type 3 (Dest Unreachable), Code 13 (Admin Prohibited)
+
         self._generate_icmp_error(datapath, port, original_pkt, eth_pkt, ipv4_pkt, 13)
 
     def send_icmp_network_unreachable(self, datapath, port, original_pkt, eth_pkt, ipv4_pkt):
@@ -329,13 +269,19 @@ class Router(app_manager.RyuApp):
             ext_nets = [net for net, port in routes.items() if port == 3]
             ser_nets = [net for net, port in routes.items() if port == 2]
             
+            # Chris NOTE: we check if the source IP belongs to the external network and the destination IP belongs to the server network (ext_to_ser), 
+            # or vice versa (ser_to_ext). 
+            # If either of these conditions is true, it means this packet violates our security policy and should be dropped with an ICMP Prohibited response.
             ext_to_ser = any(src_ip_obj in net for net in ext_nets) and any(dst_ip_obj in net for net in ser_nets)
             ser_to_ext = any(src_ip_obj in net for net in ser_nets) and any(dst_ip_obj in net for net in ext_nets)
             
+            # Chris NOTE: if the packet violates the security policy, 
+            # we send an ICMP Prohibited response back to the sender and dont process the packet any further
             if ext_to_ser or ser_to_ext:
                 self.send_icmp_prohibited(datapath, in_port, pkt, eth_pkt, ipv4_pkt)
                 return  # Verhindert das weitere Routing dieses Pakets.
 
+        # Chris NOTE: if the packet passed the security checks, we proceed with the normal routing logic.
         # 2.1 LPM Routing lookup
         out_port = self.find_longest_prefix_match(dpid, dst_ip)
 
@@ -346,8 +292,11 @@ class Router(app_manager.RyuApp):
             return
         
         # 2.3 Ziel-IP ist direkt an einem Router-Port angeschlossen: ICMP Echo Request erlauben, alle anderen Pakete verbieten
-        if dst_ip in self.router_configs[dpid]['ips'].values():
-            if dst_ip != self.router_configs[dpid]['ips'].get(in_port):
+        dest_ip_is_a_gateway_ip = dst_ip in self.router_configs[dpid]['ips'].values()
+        dest_ip_is_correct_for_in_port = dst_ip == self.router_configs[dpid]['ips'].get(in_port)
+
+        if dest_ip_is_a_gateway_ip:            
+            if not dest_ip_is_correct_for_in_port:
                 self.send_icmp_prohibited(datapath, in_port, pkt, eth_pkt, ipv4_pkt)
             else:
                 self.handle_icmp_echo_request(ipv4_pkt, in_port, datapath, pkt)
@@ -356,24 +305,23 @@ class Router(app_manager.RyuApp):
         #----------------------------Ab hier ist die normale Routing-Logik für Pakete, die nicht direkt an den Router adressiert sind.----------------------------
 
         # Prüfe Next-Hop MAC in ARP-Tabelle
-        if dst_ip in self.arp_table[dpid]:
+        dest_ip_mac_known = dst_ip in self.arp_table[dpid]
+        dest_ip_has_pending_packets = dst_ip in self.pending_packets[dpid]
+        if dest_ip_mac_known:
             self._send_pkt_next_hop(datapath, msg, src_ip, dst_ip, in_port, out_port, pkt)        
         else: # 2.4 Next-Hop MAC unbekannt: ARP Request generieren und Paket puffern
-            if dst_ip not in self.pending_packets[dpid]:
+            if not dest_ip_has_pending_packets:
                 self.pending_packets[dpid][dst_ip] = []
                 self._send_arp_request(datapath, out_port, dst_ip)  
             # Paket puffern              
             self.pending_packets[dpid][dst_ip].append((msg, in_port, out_port, pkt))
-            
-        # Someone is trying to ping the router itself, we should reply with an ICMP Echo Reply if it's an Echo Request.   
-        if dst_ip == self.router_configs[dpid]['ips'].get(in_port):
-            self.handle_icmp_echo_request(ipv4_pkt, in_port, datapath, pkt)
-            return
+
 
     def _send_pkt_next_hop(self, datapath, msg, src_ip, dst_ip, in_port, out_port, pkt):
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
         dpid = datapath.id
+
         dst_mac = self.arp_table[dpid][dst_ip]
         src_mac = self.router_configs[dpid]['macs'][out_port]
 
@@ -433,5 +381,70 @@ class Router(app_manager.RyuApp):
             src_mac=self.router_configs[dpid]['macs'].get(port), dst_mac=eth_pkt.src,
             src_ip=self.router_configs[dpid]['ips'].get(port), dst_ip=ipv4_pkt.src,
             icmp_type=icmp.ICMP_ECHO_REPLY, icmp_code=icmp.ICMP_ECHO_REPLY_CODE, icmp_data=icmp_pkt.data
+        )
+        self._send_packet_out(datapath, port, pkt_data)
+    
+    # --- HELPER FUNKTIONEN FÜR PAKETGENERIERUNG UND DISPATCHING | Disclosure, AI used to assist ---
+
+    def _send_packet_out(self, datapath, out_port, data, in_port=None):
+        """Kapselt das Versenden eines Pakets über einen spezifischen Port aus dem Controller."""
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        in_port = in_port if in_port is not None else ofproto.OFPP_CONTROLLER
+        actions = [parser.OFPActionOutput(out_port)]
+        
+        out = parser.OFPPacketOut(
+            datapath=datapath,
+            buffer_id=ofproto.OFP_NO_BUFFER,
+            in_port=in_port,
+            actions=actions,
+            data=data
+        )
+        datapath.send_msg(out)
+
+    def _build_arp_packet(self, src_mac, dst_mac_eth, target_mac_arp, src_ip, dst_ip, opcode):
+        """Generiert generisch ARP-Requests oder -Replies als Byte-Array."""
+        pkt = packet.Packet()
+        eth_header = ethernet.ethernet(dst=dst_mac_eth, src=src_mac, ethertype=ether.ETH_TYPE_ARP)
+        arp_header = arp.arp(
+            hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4,
+            opcode=opcode, src_mac=src_mac, src_ip=src_ip, 
+            dst_mac=target_mac_arp, dst_ip=dst_ip
+        )
+        pkt.add_protocol(eth_header)
+        pkt.add_protocol(arp_header)
+        pkt.serialize()
+        return pkt.data
+
+    def _build_icmp_packet(self, src_mac, dst_mac, src_ip, dst_ip, icmp_type, icmp_code, icmp_data):
+        """Generiert generisch ICMP-Pakete (Echo Reply oder Errors) als Byte-Array."""
+        pkt = packet.Packet()
+        eth_header = ethernet.ethernet(dst=dst_mac, src=src_mac, ethertype=ether.ETH_TYPE_IP)
+        ip_header = ipv4.ipv4(dst=dst_ip, src=src_ip, proto=in_proto.IPPROTO_ICMP)
+        icmp_header = icmp.icmp(type_=icmp_type, code=icmp_code, csum=0, data=icmp_data)
+        
+        pkt.add_protocol(eth_header)
+        pkt.add_protocol(ip_header)
+        pkt.add_protocol(icmp_header)
+        pkt.serialize()
+        return pkt.data
+
+    def _generate_icmp_error(self, datapath, port, original_pkt, eth_pkt, ipv4_pkt, icmp_code):
+        """Zentrale Logik für ICMP Destination Unreachable Errors (Type 3) inkl. RFC 792 Payload-Extraktion."""
+        dpid = datapath.id
+        src_mac = self.router_configs[dpid]['macs'].get(port)
+        src_ip = self.router_configs[dpid]['ips'].get(port)
+
+        # RFC 792 Extraction: IP-Header + erste 8 Bytes des ICMP-Payloads aus dem Raw-Buffer
+        eth_offset = 18 if eth_pkt.ethertype == ether.ETH_TYPE_8021Q else 14
+        ip_hlen = ipv4_pkt.header_length * 4
+        orig_ip_bytes = original_pkt.data[eth_offset : eth_offset + ip_hlen + 8]
+        
+        unreach_data = icmp.dest_unreach(data_len=len(orig_ip_bytes), data=orig_ip_bytes)
+        
+        pkt_data = self._build_icmp_packet(
+            src_mac=src_mac, dst_mac=eth_pkt.src,
+            src_ip=src_ip, dst_ip=ipv4_pkt.src,
+            icmp_type=icmp.ICMP_DEST_UNREACH, icmp_code=icmp_code, icmp_data=unreach_data
         )
         self._send_packet_out(datapath, port, pkt_data)
