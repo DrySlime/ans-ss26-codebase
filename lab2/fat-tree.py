@@ -40,14 +40,108 @@ import topo
 
 class FattreeNet(Topo):
     """
-    Create a fat-tree network in Mininet
+    Create a fat-tree network in Mininet 
     """
 
     def __init__(self, ft_topo):
-
         Topo.__init__(self)
+        debug = True
+        # 1. Server (Hosts) hinzufügen und IP-Zuweisung berechnen
+        for server in ft_topo.servers:
+            # Format der ft_topo-ID: pod_{pod}_edge_{edge_idx}_server_{server_idx}
+            parts = server.id.split("_")
+            pod = int(parts[1])
+            edge_idx = int(parts[3])
+            server_idx = int(parts[5])
 
-        # TODO: please complete the network generation logic here
+            # IP-Berechnung nach Al-Fares-Paper[cite: 204]: ID im Intervall [2, k/2 + 1]
+            host_id_byte = server_idx + 2
+            ip_address = f"10.{pod}.{edge_idx}.{host_id_byte}"
+
+            if debug:
+                print(f"Adding host {server.id} with IP {ip_address} and MAC 00:00:10:{pod:02x}:{edge_idx:02x}:{host_id_byte:02x}")
+
+            # MAC-Adresse passend zur Hierarchie generieren
+            mac_address = f"00:00:10:{pod:02x}:{edge_idx:02x}:{host_id_byte:02x}"
+
+            # Alphanumerischer Name für Mininet (z.B. pod0edge1server0 für pod 0, edge 1, server 0)
+            clean_host_name = f"p{pod}e{edge_idx}s{server_idx}"
+
+            self.addHost(
+                clean_host_name, 
+                ip=f"{ip_address}/8", 
+                mac=mac_address
+            )
+
+        # 2. Switches mit bereinigten Namen hinzufügen
+        node_name_map = {}
+
+        for switch in ft_topo.switches:
+            parts = switch.id.split("_")
+            
+            if switch.type == "core":
+                core_idx = parts[1]
+                clean_name = f"c{core_idx}"
+            elif switch.type == "aggregation":
+                pod = parts[1]
+                agg_idx = parts[3]
+                clean_name = f"p{pod}a{agg_idx}"
+            elif switch.type == "edge":
+                pod = parts[1]
+                edge_idx = parts[3]
+                clean_name = f"p{pod}e{edge_idx}"
+
+            node_name_map[switch.id] = clean_name
+            
+            # DPID formatieren (16-stelliger Hex-String)
+            dpid_hex = ""
+
+            # DPID formatieren: Custom Mapping statt Zähler
+            if switch.type == "core":
+                # Prefix (14 Zeichen) + core_idx (2 Zeichen) = 16 Zeichen
+                dpid_hex = f"00000000000100{int(core_idx):02x}"
+            elif switch.type == "aggregation":
+                # Prefix (12 Zeichen) + pod (2 Zeichen) + agg_idx (2 Zeichen) = 16 Zeichen
+                dpid_hex = f"000000000002{int(pod):02x}{int(agg_idx):02x}"
+            elif switch.type == "edge":
+                # Prefix (12 Zeichen) + pod (2 Zeichen) + edge_idx (2 Zeichen) = 16 Zeichen
+                dpid_hex = f"000000000003{int(pod):02x}{int(edge_idx):02x}"
+            
+            self.addSwitch(clean_name, dpid=dpid_hex)            
+
+        # 3. Kanten (Links) hinzufügen
+        added_links = set()
+        
+        link_opts = dict(
+            bw=15,       # 15 Mbps Bandbreite
+            delay='5ms', # 5 ms Latenz
+            use_tclink=True
+        )
+
+        for switch in ft_topo.switches:
+            s_clean = node_name_map[switch.id]
+            
+            for edge in switch.edges:
+                n1_id = edge.lnode.id
+                n2_id = edge.rnode.id
+                
+                link_id = frozenset([n1_id, n2_id])
+                
+                if link_id not in added_links:
+                    # Prüfen, ob der Zielknoten ein Server (Host) ist
+                    if "server" in n1_id or "server" in n2_id:
+                        # Server-ID in bereinigten Hostnamen übersetzen
+                        srv_id = n1_id if "server" in n1_id else n2_id
+                        parts = srv_id.split("_")
+                        target_clean = f"p{parts[1]}e{parts[3]}s{parts[5]}"
+                    else:
+                        # Zielknoten ist ein Switch -> Mapping nutzen
+                        target_id = n1_id if n1_id != switch.id else n2_id
+                        target_clean = node_name_map[target_id]
+
+                    self.addLink(s_clean, target_clean, **link_opts)
+                    added_links.add(link_id)
+
 
 
 def make_mininet_instance(graph_topo):

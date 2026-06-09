@@ -67,5 +67,52 @@ class Fattree:
 		self.generate(num_ports)
 
 	def generate(self, num_ports):
+		k = num_ports
+		n = k // 2  # Anzahl der Ports pro Layer-Richtung (k/2)
 
-		# TODO: code for generating the fat-tree topology
+        # 1. Core-Ebene generieren
+        # (k/2)^2 Core-Switches, aufgeteilt in k/2 logische Gruppen der Größe k/2
+
+		core_switches = []
+		for i in range(n * n):
+			core = Node(id=f"core_{i}", type="core")
+			core_switches.append(core)
+			self.switches.append(core)
+
+		# 2. Pods generieren und iterativ verkabeln
+		for pod in range(k):
+			agg_switches = []
+			edge_switches = []
+
+			# Aggregation- und Edge-Switches für Pod p anlegen
+			for i in range(n):
+				agg = Node(id=f"pod_{pod}_agg_{i}", type="aggregation")
+				edge = Node(id=f"pod_{pod}_edge_{i}", type="edge")
+
+				agg_switches.append(agg)
+				edge_switches.append(edge)
+
+				self.switches.extend([agg, edge])
+
+			# Edge <-> Server Verkabelung (Southbound)
+			# Jeder Edge-Switch verbindet k/2 dedizierte Server
+			for i, edge in enumerate(edge_switches):
+				for j in range(n):
+					server = Node(id=f"pod_{pod}_edge_{i}_server_{j}", type="server")
+					self.servers.append(server)
+					edge.add_edge(server)
+
+				# Aggregation <-> Edge Verkabelung (Intra-Pod)
+				# Vollständiger bipartiter Graph zwischen Aggregation und Edge innerhalb eines Pods
+			for agg in agg_switches:
+				for edge in edge_switches:
+					agg.add_edge(edge)
+
+			# Core <-> Aggregation Verkabelung (Northbound)
+			# Deterministisches Wiring-Muster des Clos-Netzwerks:
+			# Der i-te Aggregation-Switch des Pods p wird mit der i-ten logischen 
+			# Gruppe der Core-Switches verbunden (jeweils n Verbindungen).
+			for i, agg in enumerate(agg_switches):
+				for j in range(n):
+					core_index = i * n + j  # Mappt auf die i-te Gruppe
+					agg.add_edge(core_switches[core_index])
