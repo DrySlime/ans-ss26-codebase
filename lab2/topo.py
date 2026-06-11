@@ -64,6 +64,7 @@ class Fattree:
 	def __init__(self, num_ports):
 		self.servers = []
 		self.switches = []
+		self.numports = num_ports
 		self.generate(num_ports)
 
 	def generate(self, num_ports):
