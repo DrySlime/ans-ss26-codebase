@@ -75,40 +75,49 @@ class FattreeNet(Topo):
 
         # 2. Switches mit bereinigten Namen hinzufügen
         node_name_map = {}
+        k = ft_topo.numports
+        n = k // 2
 
         for switch in ft_topo.switches:
             parts = switch.id.split("_")
             
             if switch.type == "core":
-                core_idx = parts[1]
+                core_idx = int(parts[1])
+                # Koordinaten j und i für 10.k.j.i
+                i = (core_idx // n) + 1
+                j = (core_idx % n) + 1
+                ip_address = f"10.{k}.{j}.{i}"
+                
                 clean_name = f"c{core_idx}"
+                dpid_hex = f"00000000000100{core_idx:02x}"
+                
             elif switch.type == "aggregation":
-                pod = parts[1]
-                agg_idx = parts[3]
+                pod = int(parts[1])
+                agg_idx = int(parts[3])
+                # Offset n für Aggregation-Switches
+                switch_id = agg_idx + n
+                ip_address = f"10.{pod}.{switch_id}.1"
+                
                 clean_name = f"p{pod}a{agg_idx}"
+                dpid_hex = f"000000000002{pod:02x}{agg_idx:02x}"
+                
             elif switch.type == "edge":
-                pod = parts[1]
-                edge_idx = parts[3]
+                pod = int(parts[1])
+                edge_idx = int(parts[3])
+                # Direkter Index für Edge-Switches
+                switch_id = edge_idx
+                ip_address = f"10.{pod}.{switch_id}.1"
+                
                 clean_name = f"p{pod}e{edge_idx}"
+                dpid_hex = f"000000000003{pod:02x}{edge_idx:02x}"
 
             node_name_map[switch.id] = clean_name
             
-            # DPID formatieren (16-stelliger Hex-String)
-            dpid_hex = ""
-
-            # DPID formatieren: Custom Mapping statt Zähler
-            if switch.type == "core":
-                # Prefix (14 Zeichen) + core_idx (2 Zeichen) = 16 Zeichen
-                dpid_hex = f"00000000000100{int(core_idx):02x}"
-            elif switch.type == "aggregation":
-                # Prefix (12 Zeichen) + pod (2 Zeichen) + agg_idx (2 Zeichen) = 16 Zeichen
-                dpid_hex = f"000000000002{int(pod):02x}{int(agg_idx):02x}"
-            elif switch.type == "edge":
-                # Prefix (12 Zeichen) + pod (2 Zeichen) + edge_idx (2 Zeichen) = 16 Zeichen
-                dpid_hex = f"000000000003{int(pod):02x}{int(edge_idx):02x}"
+            # Switch mit dpid und logischer IP hinzufügen
+            if debug:
+                print(f"Adding switch {clean_name} with IP {ip_address}")
+            self.addSwitch(clean_name, dpid=dpid_hex, ip=ip_address)
             
-            self.addSwitch(clean_name, dpid=dpid_hex)            
-
         # 3. Kanten (Links) hinzufügen
         added_links = set()
         
@@ -130,7 +139,6 @@ class FattreeNet(Topo):
                 if link_id not in added_links:
                     # Prüfen, ob der Zielknoten ein Server (Host) ist
                     if "server" in n1_id or "server" in n2_id:
-                        # Server-ID in bereinigten Hostnamen übersetzen
                         srv_id = n1_id if "server" in n1_id else n2_id
                         parts = srv_id.split("_")
                         target_clean = f"p{parts[1]}e{parts[3]}s{parts[5]}"
