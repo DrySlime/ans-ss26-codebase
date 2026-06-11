@@ -17,7 +17,7 @@ class FTRouter(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(FTRouter, self).__init__(*args, **kwargs)
-        self.debug = True
+        self.debug = False
         self.k = 4
         self.topo_net = topo.Fattree(self.k)
         self.host_port_table = {} # dpid -> {host_ip: port_no}
