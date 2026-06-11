@@ -11,7 +11,8 @@ class TestFattreeTopology(unittest.TestCase):
     """
 
     def setUp(self):
-        self.k = 4
+        self.k = 32
+
         self.ft = Fattree(num_ports=self.k)
         
         # Lookup-Strukturen zur O(1) Knotenauflösung
@@ -91,4 +92,7 @@ class TestFattreeTopology(unittest.TestCase):
                 self.assertEqual(server_links, self.k // 2)
 
 if __name__ == "__main__":
+    print("----------------------------------------")
+    print(f"TESTE FATTREE Topologie mit k={32}")
+    print("----------------------------------------")
     unittest.main(verbosity=2)

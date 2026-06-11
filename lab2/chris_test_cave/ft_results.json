@@ -1,0 +1,9 @@
+{
+    "test1_intra_edge_mbps": 56.300000000000004,
+    "test2_intra_pod_mbps": 55.9,
+    "test3_inter_pod_single_mbps": 13.4,
+    "test4_inter_pod_bisection_mbps": 113.30000000000001,
+    "test5_stride_1_mbps": 206.8,
+    "test6_stride_4_mbps": 188.06999999999996,
+    "test7_random_mbps": 155.51999999999998
+}

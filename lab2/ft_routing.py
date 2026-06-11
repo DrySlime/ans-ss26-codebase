@@ -472,14 +472,11 @@ class FTRouter(app_manager.RyuApp):
                 
                 # Der logische Uplink-Index (0 bis k/2 - 1) bestimmt den zuständigen Agg-Switch.
 
-                # Hinweis: Auf der Edge-Ebene entfällt der "+ switch_z" Shift in der Modulo-Rechnung, 
-                # da hier die Verteilung rein auf Basis der Host-ID zu den Agg-Switches balanciert wird.
-
                 #For the lower pod switches, we simply omit the /24 subnet prefix
                 #step, in line 3, since that subnet’s own traffic is switched, and
                 #intra- and inter-pod traffic should be evenly split among the upper
                 #switches.
-                uplink_index = (host_id - 2) % k_half
+                uplink_index = (host_id - 2 + switch_z) % k_half
                 
                 # Ziel-Aggregation-Switch aus der sortierten Liste wählen
                 target_agg_dpid = connected_aggs[uplink_index]
