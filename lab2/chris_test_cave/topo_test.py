@@ -108,4 +108,4 @@ def visualize_fattree(k):
 if __name__ == "__main__":
     # Teste die Visualisierung für k=4 (Empfohlen zum Validieren, da übersichtlich)
     # Für k=6 oder k=8 wächst der Graph exponentiell, bleibt aber mathematisch korrekt.
-    visualize_fattree(k=8)
+    visualize_fattree(k=4)

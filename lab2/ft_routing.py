@@ -45,43 +45,6 @@ class FTRouter(app_manager.RyuApp):
             self.datapaths[sw.dp.id] = sw.dp
         self.discover_all_hosts()
 
-
-    def _classify_switch(self, dpid):
-        """
-        Klassifiziert den Switch-Typ basierend auf der Topologie-Struktur.
-        Ich habe das nur mit dpid hinbekommen. Google und KI haben mir wenig geholfen die ips per dpid zu ermitteln.
-        """
-        sw_type_id = (dpid >> 16) & 0xFF
-        pod = (dpid >> 8) & 0xFF
-        local_idx = dpid & 0xFF
-        n = self.k // 2
-
-        meta = {'type': None, 'ip': None}
-
-        if sw_type_id == 1:
-            i = (local_idx // n) + 1
-            j = (local_idx % n) + 1
-            meta['type'] = 'core'
-            meta['ip'] = f"10.{self.k}.{j}.{i}"
-            meta['i'] = i
-            meta['j'] = j
-        elif sw_type_id == 2:
-            meta['type'] = 'agg'
-            meta['ip'] = f"10.{pod}.{local_idx + n}.1"
-            meta['pod'] = pod
-            meta['idx'] = local_idx + n
-        elif sw_type_id == 3:
-            meta['type'] = 'edge'
-            meta['ip'] = f"10.{pod}.{local_idx}.1"
-            meta['pod'] = pod
-            meta['idx'] = local_idx
-
-        self.switch_info[dpid] = meta
-
-    def _get_dynamic_port(self, src_dpid, dst_dpid):
-        """Ermittelt den Egress-Port dynamisch aus der Topologie-Adjazenz."""
-        return self.adjacency.get(src_dpid, {}).get(dst_dpid, None)
-
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
@@ -90,59 +53,6 @@ class FTRouter(app_manager.RyuApp):
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
-
-    def add_flow(self, datapath, priority, match, actions):
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match, instructions=inst)
-        datapath.send_msg(mod)
-
-    def dynamic_host_learning(self,ev):
-        # Learning der Host-Ports auf Edge-Switches durch Beobachtung des Data-Plane Traffics.
-        # --- START DYNAMIC HOST LEARNING ---
-        msg = ev.msg
-        datapath = msg.datapath
-        dpid = datapath.id
-        in_port = msg.match['in_port']
-
-        pkt = packet.Packet(msg.data)
-        arp_pkt = pkt.get_protocol(arp.arp)
-        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
-
-        # IP des Senders extrahieren
-        src_ip = None
-        if arp_pkt:
-            src_ip = arp_pkt.src_ip
-        elif ipv4_pkt:
-            src_ip = ipv4_pkt.src
-
-        # Prüfen, ob in_port ein Inter-Switch-Link ist (O(n) über Values ist hier ok, max. k Ports)
-        inter_switch_ports = self.adjacency.get(dpid, {}).values()
-        is_host_port = in_port not in inter_switch_ports
-
-        # Source-IP dem Ingress-Port zuordnen, falls von Host empfangen
-        sw_meta = self.switch_info.get(dpid)
-        if src_ip and sw_meta['type'] == 'edge' and is_host_port:
-            self.host_port_table.setdefault(dpid, {})[src_ip] = {
-                'port': in_port,
-                'mac': arp_pkt.src_mac if arp_pkt else None
-            }
-            if self.debug:
-                print(f"[LEARNING] Switch {self._dpid_to_name(dpid)} lernt Host {src_ip} an Port {in_port}")
-
-            # WICHTIG: Nur für IPv4 (eth_type=0x0800), um ARP-Flussregeln nicht zu korrumpieren
-            match_downward = datapath.ofproto_parser.OFPMatch(
-                eth_type=0x0800,
-                ipv4_dst=src_ip
-            )
-            
-            actions_downward = [datapath.ofproto_parser.OFPActionOutput(in_port)]
-            
-            # Hohe Priorität (z. B. 100), damit diese exakte Host-Zustellung das 
-            # generische Suffix-Routing (Prio 60) oder das Drop-Verhalten (Prio 40) überschreibt.
-            self.add_flow(datapath, priority=100, match=match_downward, actions=actions_downward)
-        # --- END DYNAMIC HOST LEARNING ---
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -279,6 +189,99 @@ class FTRouter(app_manager.RyuApp):
         
 
     # --- Topologie / Port Resolution Helper ---
+
+    
+    
+
+    def _classify_switch(self, dpid):
+        """
+        Klassifiziert den Switch-Typ basierend auf der Topologie-Struktur.
+        Ich habe das nur mit dpid hinbekommen. Google und KI haben mir wenig geholfen die ips per dpid zu ermitteln.
+        """
+        sw_type_id = (dpid >> 16) & 0xFF
+        pod = (dpid >> 8) & 0xFF
+        local_idx = dpid & 0xFF
+        n = self.k // 2
+
+        meta = {'type': None, 'ip': None}
+
+        if sw_type_id == 1:
+            i = (local_idx // n) + 1
+            j = (local_idx % n) + 1
+            meta['type'] = 'core'
+            meta['ip'] = f"10.{self.k}.{j}.{i}"
+            meta['i'] = i
+            meta['j'] = j
+        elif sw_type_id == 2:
+            meta['type'] = 'agg'
+            meta['ip'] = f"10.{pod}.{local_idx + n}.1"
+            meta['pod'] = pod
+            meta['idx'] = local_idx + n
+        elif sw_type_id == 3:
+            meta['type'] = 'edge'
+            meta['ip'] = f"10.{pod}.{local_idx}.1"
+            meta['pod'] = pod
+            meta['idx'] = local_idx
+
+        self.switch_info[dpid] = meta
+
+    def _get_dynamic_port(self, src_dpid, dst_dpid):
+        """Ermittelt den Egress-Port dynamisch aus der Topologie-Adjazenz."""
+        return self.adjacency.get(src_dpid, {}).get(dst_dpid, None)
+
+    def add_flow(self, datapath, priority, match, actions):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match, instructions=inst)
+        datapath.send_msg(mod)
+
+    def dynamic_host_learning(self,ev):
+        # Learning der Host-Ports auf Edge-Switches durch Beobachtung des Data-Plane Traffics.
+        # --- START DYNAMIC HOST LEARNING ---
+        msg = ev.msg
+        datapath = msg.datapath
+        dpid = datapath.id
+        in_port = msg.match['in_port']
+
+        pkt = packet.Packet(msg.data)
+        arp_pkt = pkt.get_protocol(arp.arp)
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+
+        # IP des Senders extrahieren
+        src_ip = None
+        if arp_pkt:
+            src_ip = arp_pkt.src_ip
+        elif ipv4_pkt:
+            src_ip = ipv4_pkt.src
+
+        # Prüfen, ob in_port ein Inter-Switch-Link ist (O(n) über Values ist hier ok, max. k Ports)
+        inter_switch_ports = self.adjacency.get(dpid, {}).values()
+        is_host_port = in_port not in inter_switch_ports
+
+        # Source-IP dem Ingress-Port zuordnen, falls von Host empfangen
+        sw_meta = self.switch_info.get(dpid)
+        if src_ip and sw_meta['type'] == 'edge' and is_host_port:
+            self.host_port_table.setdefault(dpid, {})[src_ip] = {
+                'port': in_port,
+                'mac': arp_pkt.src_mac if arp_pkt else None
+            }
+            if self.debug:
+                print(f"[LEARNING] Switch {self._dpid_to_name(dpid)} lernt Host {src_ip} an Port {in_port}")
+
+            # WICHTIG: Nur für IPv4 (eth_type=0x0800), um ARP-Flussregeln nicht zu korrumpieren
+            match_downward = datapath.ofproto_parser.OFPMatch(
+                eth_type=0x0800,
+                ipv4_dst=src_ip
+            )
+            
+            actions_downward = [datapath.ofproto_parser.OFPActionOutput(in_port)]
+            
+            # Hohe Priorität (z. B. 100), damit diese exakte Host-Zustellung das 
+            # generische Suffix-Routing (Prio 60) oder das Drop-Verhalten (Prio 40) überschreibt.
+            self.add_flow(datapath, priority=100, match=match_downward, actions=actions_downward)
+        # --- END DYNAMIC HOST LEARNING ---
+
     def _reinject_packet_to_table(self, datapath, msg, in_port):
         """Sendet ein Paket zurück in die Pipeline des Switches zur erneuten Evaluierung."""
         parser = datapath.ofproto_parser
