@@ -57,9 +57,11 @@ class FattreeNet(Topo):
             # IP-Berechnung nach Al-Fares-Paper[cite: 204]: ID im Intervall [2, k/2 + 1]
             host_id_byte = server_idx + 2
             ip_address = f"10.{pod}.{edge_idx}.{host_id_byte}"
+            # Das korrekte Gateway ist die IP des Edge-Switches (.1) im selben Subnetz
+            gateway_ip = f"10.{pod}.{edge_idx}.1"
 
             if debug:
-                print(f"Adding host {server.id} with IP {ip_address} and MAC 00:00:10:{pod:02x}:{edge_idx:02x}:{host_id_byte:02x}")
+                print(f"Adding host {server.id} with IP {ip_address}, Gateway {gateway_ip}")
 
             # MAC-Adresse passend zur Hierarchie generieren
             mac_address = f"00:00:10:{pod:02x}:{edge_idx:02x}:{host_id_byte:02x}"
@@ -69,8 +71,9 @@ class FattreeNet(Topo):
 
             self.addHost(
                 clean_host_name, 
-                ip=f"{ip_address}/8", 
-                mac=mac_address
+                ip=f"{ip_address}/24", 
+                mac=mac_address,
+                defaultRoute=f"via {gateway_ip}"
             )
 
         # 2. Switches mit bereinigten Namen hinzufügen
