@@ -113,17 +113,20 @@ class FTRouter(app_manager.RyuApp):
                 # Fall A: Das Ziel ist im selben Subnetz (.X)
                 if host_id == 1:
                     # Host sucht explizit das Gateway (10.pod.edge.1)
-                    print(f"Generiere ARP-Response für Gateway {arp_pkt.dst_ip}")
+                    if self.debug:
+                        print(f"Generiere ARP-Response für Gateway {arp_pkt.dst_ip}")
                     self._handle_arp_request(datapath, in_port, eth, arp_pkt)
                 else:
                     # Host sucht einen anderen lokalen Host im selben /24-Subnetz -> Fluten/Unicast im Edge-Block
-                    print(f"[EDGE-LOCAL] ARP Request für lokalen Host: {arp_pkt.dst_ip}")
+                    if self.debug:
+                        print(f"[EDGE-LOCAL] ARP Request für lokalen Host: {arp_pkt.dst_ip}")
                     self._flood_to_hosts(datapath, msg, in_port, arp_pkt.dst_ip)
             else:
                 # Fall B: Das Ziel ist in einem ANDEREN Subnetz oder Pod
                 # Der Edge-Switch fängt den Request ab und gibt SEINE eigene MAC (bzw. eine virtuelle Gateway-MAC) zurück.
                 # Dadurch schickt der Host das IP-Paket an den Edge-Switch, wo es via L3-Regeln hochgeroutet wird.
-                print(f"[PROXY-ARP] Abfangen des ARP-Requests für externes Ziel: {arp_pkt.dst_ip} -> Antworte mit Gateway-MAC")
+                if self.debug:
+                    print(f"[PROXY-ARP] Abfangen des ARP-Requests für externes Ziel: {arp_pkt.dst_ip} -> Antworte mit Gateway-MAC")
                 #self._handle_proxy_arp_request(datapath, in_port, eth, arp_pkt)
                 
             return
@@ -321,7 +324,8 @@ class FTRouter(app_manager.RyuApp):
                     actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
                     self.add_flow(datapath, priority, match, actions)
                 else:
-                    print(f"[ERROR] Core Switch {self._dpid_to_name(datapath.id)} does not have a port for Pod {target_pod}")
+                    if self.debug:
+                        print(f"[ERROR] Core Switch {self._dpid_to_name(datapath.id)} does not have a port for Pod {target_pod}")
 
         if sw_meta['type'] == 'agg':
             if self.debug:
