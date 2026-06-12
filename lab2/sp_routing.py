@@ -63,33 +63,51 @@ class SPRouter(app_manager.RyuApp):
 
     def _classify_switch(self, dpid):
         """
-        Klassifiziert den Switch-Typ basierend auf der Topologie-Struktur.
-        Ich habe das nur mit dpid hinbekommen. Google und KI haben mir wenig geholfen die ips per dpid zu ermitteln.
+        Klassifiziert den Switch-Typ durch mathematische Umkehrung der DPID.
+        Setzt voraus, dass self.k initialisiert ist.
         """
-        sw_type_id = (dpid >> 16) & 0xFF
-        pod = (dpid >> 8) & 0xFF
-        local_idx = dpid & 0xFF
         n = self.k // 2
+        core_limit = n * n
+        agg_limit = core_limit + (self.k * n)
+        edge_limit = agg_limit + (self.k * n)
 
         meta = {'type': None, 'ip': None}
 
-        if sw_type_id == 1:
-            i = (local_idx // n) + 1
-            j = (local_idx % n) + 1
-            meta['type'] = 'core'
-            meta['ip'] = f"10.{self.k}.{j}.{i}"
-            meta['i'] = i
-            meta['j'] = j
-        elif sw_type_id == 2:
-            meta['type'] = 'agg'
-            meta['ip'] = f"10.{pod}.{local_idx + n}.1"
-            meta['pod'] = pod
-            meta['idx'] = local_idx + n
-        elif sw_type_id == 3:
-            meta['type'] = 'edge'
-            meta['ip'] = f"10.{pod}.{local_idx}.1"
-            meta['pod'] = pod
-            meta['idx'] = local_idx
+        if 1 <= dpid <= core_limit:
+            # Core Switch
+            core_idx = dpid - 1
+            i = (core_idx // n) + 1
+            j = (core_idx % n) + 1
+            meta.update({
+                'type': 'core', 
+                'ip': f"10.{self.k}.{j}.{i}", 
+                'i': i, 
+                'j': j
+            })
+            
+        elif core_limit < dpid <= agg_limit:
+            # Aggregation Switch
+            offset = dpid - core_limit - 1
+            pod = offset // n
+            local_idx = offset % n
+            meta.update({
+                'type': 'agg', 
+                'ip': f"10.{pod}.{local_idx + n}.1", 
+                'pod': pod, 
+                'idx': local_idx + n
+            })
+            
+        elif agg_limit < dpid <= edge_limit:
+            # Edge Switch
+            offset = dpid - agg_limit - 1
+            pod = offset // n
+            local_idx = offset % n
+            meta.update({
+                'type': 'edge', 
+                'ip': f"10.{pod}.{local_idx}.1", 
+                'pod': pod, 
+                'idx': local_idx
+            })
 
         self.switch_info[dpid] = meta
 
@@ -388,26 +406,25 @@ class SPRouter(app_manager.RyuApp):
     
     def _dpid_to_name(self, dpid):
         """
-        Dekodiert die Integer-DPID in den human-readable Switch-Namen.
-        Erwartet das Format 0xT0P0I (T=Tier, P=Pod, I=Index).
+        Rekonstruiert die logischen Namen (c0, p0a0, p0e0) für Logging/Debugging,
+        obwohl Mininet intern 's{dpid}' verwendet.
         """
-        switch_type = (dpid >> 16) & 0xF
-        
-        if switch_type == 1:
-            core_idx = dpid & 0xFF
-            return f"c{core_idx}"
-        
-        elif switch_type == 2:
-            pod = (dpid >> 8) & 0xFF
-            agg_idx = dpid & 0xFF
-            return f"p{pod}a{agg_idx}"
+        n = self.k // 2
+        core_limit = n * n
+        agg_limit = core_limit + (self.k * n)
+
+        if 1 <= dpid <= core_limit:
+            return f"c{dpid - 1}"
             
-        elif switch_type == 3:
-            pod = (dpid >> 8) & 0xFF
-            edge_idx = dpid & 0xFF
-            return f"p{pod}e{edge_idx}"
+        elif core_limit < dpid <= agg_limit:
+            offset = dpid - core_limit - 1
+            return f"p{offset // n}a{offset % n}"
             
-        return str(dpid)  # Fallback für unbekannte DPIDs
+        elif agg_limit < dpid:
+            offset = dpid - agg_limit - 1
+            return f"p{offset // n}e{offset % n}"
+            
+        return f"s{dpid}"
 
     def _send_arp_to_target_edge(self, data, dst_ip):
         """Sendet ARP-Request als PacketOut exklusiv an den zuständigen Edge-Switch."""
@@ -439,14 +456,40 @@ class SPRouter(app_manager.RyuApp):
     def _get_dpid_from_ip(self, ip_str):
         try:
             octets = ip_str.split('.')
-            if len(octets) == 4 and octets[0] == '10':
-                pod = int(octets[1])
-                edge = int(octets[2])
+            if len(octets) != 4 or octets[0] != '10':
+                return None
                 
-                # Entspricht dem Format: sw_type_id = 3 (Edge) im dritten Byte
-                # dpid = (3 << 16) | (pod << 8) | edge
-                dpid = (3 << 16) | (pod << 8) | edge
-                return dpid
+            n = self.k // 2
+            core_limit = n * n
+            
+            # Extrahieren der IP-Komponenten: 10.A.B.C
+            a = int(octets[1])
+            b = int(octets[2])
+            c = int(octets[3])
+            
+            # 1. Fall: Core-Switch (Format: 10.k.j.i)
+            if a == self.k:
+                j = b
+                i = c
+                core_idx = (i - 1) * n + (j - 1)
+                return core_idx + 1
+                
+            # 2. Fall: Pod-Switches (Format: 10.pod.switch_id.1)
+            # In einem Fat-Tree hat ein Switch im Pod typischerweise das Suffix .1
+            elif c == 1:
+                pod = a
+                switch_id = b
+                
+                if switch_id < n:
+                    # Edge-Switch (switch_id = edge_idx)
+                    agg_limit = core_limit + (self.k * n)
+                    edge_idx = switch_id
+                    return agg_limit + (pod * n) + edge_idx + 1
+                else:
+                    # Aggregation-Switch (switch_id = agg_idx + n)
+                    agg_idx = switch_id - n
+                    return core_limit + (pod * n) + agg_idx + 1
+                    
         except Exception:
             pass
         return None

@@ -77,49 +77,46 @@ class FattreeNet(Topo):
             )
 
         # 2. Switches mit bereinigten Namen hinzufügen
+        # Ausschnitt für Schritt 2 (Switches) in FattreeNet.__init__
         node_name_map = {}
         k = ft_topo.numports
         n = k // 2
+
+        # Offsets für die DPID-Berechnung
+        core_limit = n * n
+        agg_limit = core_limit + (k * n)
 
         for switch in ft_topo.switches:
             parts = switch.id.split("_")
             
             if switch.type == "core":
                 core_idx = int(parts[1])
-                # Koordinaten j und i für 10.k.j.i
+                dpid = 1 + core_idx
+                
                 i = (core_idx // n) + 1
                 j = (core_idx % n) + 1
                 ip_address = f"10.{k}.{j}.{i}"
                 
-                clean_name = f"c{core_idx}"
-                dpid_hex = f"00000000000100{core_idx:02x}"
-                
             elif switch.type == "aggregation":
                 pod = int(parts[1])
                 agg_idx = int(parts[3])
-                # Offset n für Aggregation-Switches
-                switch_id = agg_idx + n
-                ip_address = f"10.{pod}.{switch_id}.1"
+                dpid = core_limit + (pod * n) + agg_idx + 1
                 
-                clean_name = f"p{pod}a{agg_idx}"
-                dpid_hex = f"000000000002{pod:02x}{agg_idx:02x}"
+                ip_address = f"10.{pod}.{agg_idx + n}.1"
                 
             elif switch.type == "edge":
                 pod = int(parts[1])
                 edge_idx = int(parts[3])
-                # Direkter Index für Edge-Switches
-                switch_id = edge_idx
-                ip_address = f"10.{pod}.{switch_id}.1"
+                dpid = agg_limit + (pod * n) + edge_idx + 1
                 
-                clean_name = f"p{pod}e{edge_idx}"
-                dpid_hex = f"000000000003{pod:02x}{edge_idx:02x}"
+                ip_address = f"10.{pod}.{edge_idx}.1"
 
+            # Mininet Name im Format s1, s2, ... inferiert DPID implizit
+            clean_name = f"s{dpid}"
             node_name_map[switch.id] = clean_name
             
-            # Switch mit dpid und logischer IP hinzufügen
-            if debug:
-                print(f"Adding switch {clean_name} with IP {ip_address}")
-            self.addSwitch(clean_name, dpid=dpid_hex, ip=ip_address)
+            # Kein 'dpid'-Parameter mehr notwendig
+            self.addSwitch(clean_name, ip=ip_address)
             
         # 3. Kanten (Links) hinzufügen
         added_links = set()
