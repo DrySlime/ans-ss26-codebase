@@ -21,4 +21,4 @@
 
 # This script is used to run the fat-tree topology simulation using Mininet.
 export PYTHONPATH="$PYTHONPATH:$HOME/mininet"
-sudo --preserve-env=PYTHONPATH python3 ./chris_test_cave/topology_iperf_mininet_test.py
+sudo --preserve-env=PYTHONPATH python3 ./topology_iperf_mininet_test.py

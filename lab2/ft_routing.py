@@ -486,8 +486,6 @@ class FTRouter(app_manager.RyuApp):
                 
                 actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
                 self.add_flow(datapath, priority=60, match=match, actions=actions)
-                
-
 
     def _dpid_to_name(self, dpid):
         """
