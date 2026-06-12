@@ -27,7 +27,6 @@ class SPRouter(app_manager.RyuApp):
         # ip -> (dpid, port)
         self.host_locations = {}
         self.k = 4  # Fattree-Parameter (Anzahl Ports pro Switch) - muss mit der Topologie übereinstimmen
-        # Initialize the topology with #ports=4
         self.topo_net = topo.Fattree(self.k)
         self.datapaths = {} # dpid -> datapath_obj
 

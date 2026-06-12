@@ -30,20 +30,50 @@ class FTRouter(app_manager.RyuApp):
 
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev):
-        switches = get_switch(self, None)
-        links = get_link(self, None)
+        """Registriert neue Switches asynchron (ohne O(N^2) Loop)."""
+        sw = ev.switch
+        self._classify_switch(sw.dp.id)
+        self.datapaths[sw.dp.id] = sw.dp
+    
+    @set_ev_cls(event.EventLinkAdd)
+    def link_add_handler(self, ev):
+        """Aktualisiert die Adjazenzmatrix und triggert Discovery bei Konvergenz."""
+        link = ev.link
+        src_dpid = link.src.dpid
+        dst_dpid = link.dst.dpid
         
-        # Adjazenzmatrix aufbauen
-        for link in links:
-            self.adjacency.setdefault(link.src.dpid, {})[link.dst.dpid] = link.src.port_no
-            self.adjacency.setdefault(link.dst.dpid, {})[link.src.dpid] = link.dst.port_no
+        self.adjacency.setdefault(src_dpid, {})[dst_dpid] = link.src.port_no
+        self.adjacency.setdefault(dst_dpid, {})[src_dpid] = link.dst.port_no
+        
+        # Prüfe, ob Edge-Switches nun vollständig in die Fabric integriert sind
+        self._check_and_trigger_discovery(src_dpid)
+        self._check_and_trigger_discovery(dst_dpid)
+    
+    def _check_and_trigger_discovery(self, dpid):
+        """Triggert ARP-Probes für einen Edge-Switch exakt einmal nach LLDP-Abschluss."""
+        sw_meta = self.switch_info.get(dpid)
+        if not sw_meta or sw_meta['type'] != 'edge':
+            return
+            
+        fabric_ports = self.adjacency.get(dpid, {})
+        # k/2 Uplinks erkannt UND Probes wurden noch nicht gesendet
+        if len(fabric_ports) == (self.k // 2) and not sw_meta.get('discovery_done'):
+            sw_meta['discovery_done'] = True
+            datapath = self.datapaths.get(dpid)
+            if datapath:
+                if self.debug:
+                    print(f"[LLDP OK] {self._dpid_to_name(dpid)} konvergiert. Starte Host-Discovery.")
+                self._discover_hosts_on_switch(datapath, sw_meta)
+    
+    def _discover_hosts_on_switch(self, datapath, sw_meta):
+        """Sendet proaktive ARP-Requests ausschließlich für das Subnetz dieses Switches."""
+        pod = sw_meta['pod']
+        subnet = sw_meta['idx']
+        k_half = self.k // 2
 
-        # Metadaten der Switches ableiten (Annahme: topo_net stellt diese Info bereit oder
-        # deterministische Ableitung aus DPID gemäß Standard Fat-Tree Nummerierung)
-        for sw in switches:
-            self._classify_switch(sw.dp.id)
-            self.datapaths[sw.dp.id] = sw.dp
-        self.discover_all_hosts()
+        for host_suffix in range(2, k_half + 2):
+            target_ip = f"10.{pod}.{subnet}.{host_suffix}"
+            self._send_arp_request(datapath, target_ip, sw_meta)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -360,6 +390,7 @@ class FTRouter(app_manager.RyuApp):
                 )
                 # Formel: (i - 2 + z) mod (k/2) + (k/2)
                 # 1. Logischen Uplink-Index berechnen (Welcher Pfad nach oben?)
+
                 uplink_index = (host_id - 2 + switch_z) % k_half
 
                 # 2. Topologie-Abfrage: Alle Core-Switches finden, die an diesen Agg-Switch hängen
@@ -469,7 +500,9 @@ class FTRouter(app_manager.RyuApp):
                     eth_type=0x0800, 
                     ipv4_dst=(f'0.0.0.{host_id}', '0.0.0.255')
                 )
-                
+                if len(connected_aggs) < k_half:
+                    if self.debug: print(f"[WARN] {self._dpid_to_name(datapath.id)}: Adjazenz unvollständig. Warte auf LLDP.")
+                    return
                 # Der logische Uplink-Index (0 bis k/2 - 1) bestimmt den zuständigen Agg-Switch.
 
                 #For the lower pod switches, we simply omit the /24 subnet prefix
@@ -649,8 +682,12 @@ class FTRouter(app_manager.RyuApp):
                 self._send_arp_request(datapath, target_ip, sw_meta)
 
     def _is_host_port(self, dpid, port):
-        """Prüft anhand der Topologie, ob der Ingress-Port ein Endhost-Port ist."""
+        """Prüft strikt, ob der Ingress-Port ein Endhost-Port ist. Blockiert bei unvollständiger Topologie."""
         inter_switch_ports = self.adjacency.get(dpid, {}).values()
+        if len(inter_switch_ports) < (self.k // 2):
+            if self.debug:
+                print(f"[DISCOVERY] {self._dpid_to_name(dpid)} LLDP noch nicht konvergiert -> Schutz vor Table-Poisoning")
+            return False # LLDP noch nicht konvergiert -> Schutz vor Table-Poisoning
         return port not in inter_switch_ports
 
     def _extract_src_ip(self, pkt):
@@ -743,7 +780,12 @@ class FTRouter(app_manager.RyuApp):
         
         # 1. Alle bekannten Fabric-Ports (Uplinks/Inter-Switch-Links) aus der Adjazenzliste
         fabric_ports = set(self.adjacency.get(dpid, {}).values())
-        
+
+        if len(fabric_ports) < (self.k // 2):
+            if self.debug:
+                print(f"{self._dpid_to_name(datapath.id)} noch nicht genug ports gefunden")
+            return [] # Split-Horizon-Schutz: Verhindert ARP-Storms in die Fabric
+
         # 2. Alle physischen Ports direkt aus dem Datapath-Objekt auslesen
         # datapath.ports ist ein Dict: {port_no: Port-Objekt}
         # Wir filtern Ports >= OFPP_MAX (z.B. OFPP_LOCAL, was Portnummer 0xfffffffe ist)

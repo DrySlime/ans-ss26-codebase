@@ -268,7 +268,6 @@ def generate_random_pairs(net):
 
 def run(graph_topo):
     lg.setLogLevel('info')
-    mininet.clean.cleanup()
     net = make_mininet_instance(graph_topo)
 
     info('*** Starting network ***\n')

@@ -45,7 +45,7 @@ class FattreeNet(Topo):
 
     def __init__(self, ft_topo):
         Topo.__init__(self)
-        debug = True
+        debug = False
         # 1. Server (Hosts) hinzufügen und IP-Zuweisung berechnen
         for server in ft_topo.servers:
             # Format der ft_topo-ID: pod_{pod}_edge_{edge_idx}_server_{server_idx}
