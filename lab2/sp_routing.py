@@ -159,25 +159,14 @@ class SPRouter(app_manager.RyuApp):
 
         # For ARP Reply
         if arp_message.dst_ip in self.host_locations.keys():
-            # find shortest path from source dpid to destinnation dpid
+            # send arp directly to edge switch and host port
             destination_dpid, destination_port = self.host_locations[arp_message.dst_ip]
-            path = self._shortest_path(source_dpid, destination_dpid)
-            datapath = self.datapaths[source_dpid]
+            datapath = self.datapaths[destination_dpid]
 
-            if not path:
-                return
-            if len(path) == 1:
-                # destination host is connected to the source switch
-                out_port = destination_port
-            else:
-                # send packet to next switch in path
-                next_dpid = path[1]
-                out_port = self.link_ports[(source_dpid, next_dpid)]
-
-            actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
+            actions = [datapath.ofproto_parser.OFPActionOutput(destination_port)]
             self._send_packet(
                 datapath=datapath,
-                bufferId=msg.buffer_id,
+                bufferId=datapath.ofproto.OFP_NO_BUFFER,
                 inPort=datapath.ofproto.OFPP_CONTROLLER,
                 actionOutputs=actions,
                 data=msg.data,
