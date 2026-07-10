@@ -3,7 +3,7 @@ from util import controller
 
 class MyController(controller.Client):
     def __init__(self):
-        super().__init__("s1", topo="log/topology.json")
+        super().__init__("s1", topo="l2/log/topology.json")
         print("Hello from MyController")
 
 

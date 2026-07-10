@@ -59,7 +59,7 @@ class _Quiet:
 
 
 class Client(object):
-    def __init__(self, sw="s1", topo="log/topology.json", verbose=False):
+    def __init__(self, sw="s1", topo="l2/log/topology.json", verbose=False):
         """
         Initialize a controller client for a given switch
 
@@ -72,7 +72,7 @@ class Client(object):
         assert topo, "topology must be provided"
 
         self.sw = sw
-        self.topo_json = topo if topo is not None else "log/topology.json"
+        self.topo_json = topo if topo is not None else "l2/log/topology.json"
         self.topo = load_topo(self.topo_json)
         self.verbose = verbose
         self.api = _Quiet(SimpleSwitchThriftAPI(self.topo.get_thrift_port(sw)), self)
@@ -356,7 +356,7 @@ def App(c=None):
 
     parser = argparse.ArgumentParser()
     parser.add_argument("sw", nargs="?", default="s1", help="switch name")
-    parser.add_argument("topo", nargs="?", default="log/topology.json", help="topology.json")
+    parser.add_argument("topo", nargs="?", default="l2/log/topology.json", help="topology.json")
     setres = parser.add_mutually_exclusive_group()
     setres.add_argument("-s", "--setup", action="store_true", help="perform a one time setup")
     setres.add_argument("-r", "--reset", action="store_true", help="wipe switch state")
