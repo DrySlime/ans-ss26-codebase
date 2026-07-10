@@ -38,7 +38,7 @@ class MyCollectives(Collectives):
         assert len(input), "input cannot be empty"
         assert len(input) == len(output), "input and output must have the same size"
         
-        CHUNK_SIZE = 2
+        CHUNK_SIZE = 6
         W = 4  # Sliding window size
         TIMEOUT = 0.5  # Retransmission timeout (500 milliseconds)
         num_elements = len(input)
@@ -67,10 +67,9 @@ class MyCollectives(Collectives):
             chunk_vals = input[pos : pos + CHUNK_SIZE]
             chunk_len = len(chunk_vals)
             
-            val0 = chunk_vals[0]
-            val1 = chunk_vals[1] if chunk_len > 1 else 0
+            vals = [chunk_vals[i] if i < chunk_len else 0 for i in range(6)]
             
-            data = struct.pack(">IHHHii", global_chunk_id, self.rank, self.world, chunk_len, val0, val1)
+            data = struct.pack(">IHHHiiiiii", global_chunk_id, self.rank, self.world, chunk_len, *vals)
             send(self.soc, data, self.switch_addr)
             
             tx_attempts[c_idx] += 1
@@ -90,7 +89,9 @@ class MyCollectives(Collectives):
             while True:
                 try:
                     res_data, addr = recv(self.soc, 1024)
-                    res_chunk_id, res_rank, res_world, res_chunk_len, res_val0, res_val1 = struct.unpack(">IHHHii", res_data)
+                    unpacked = struct.unpack(">IHHHiiiiii", res_data)
+                    res_chunk_id, res_rank, res_world, res_chunk_len = unpacked[:4]
+                    res_vals = unpacked[4:]
                     received_any = True
                     
                     # Check if this completed chunk belongs to the current AllReduce invocation
@@ -98,17 +99,16 @@ class MyCollectives(Collectives):
                     if 0 <= c_idx < num_chunks:
                         if not completed[c_idx]:
                             completed[c_idx] = True
-                            results[c_idx] = (res_val0, res_val1, res_chunk_len)
-                            #self.log(f"Received result for chunk {c_idx} (global ID {res_chunk_id}): [{res_val0}, {res_val1}]")
+                            results[c_idx] = (res_vals, res_chunk_len)
+                            #self.log(f"Received result for chunk {c_idx} (global ID {res_chunk_id})")
                             
                             # Slide window base as far as possible
                             old_base = base_chunk_idx
                             while base_chunk_idx < num_chunks and completed[base_chunk_idx]:
-                                val0, val1, clen = results[base_chunk_idx]
+                                res_vals, clen = results[base_chunk_idx]
                                 pos = base_chunk_idx * CHUNK_SIZE
-                                output[pos] = val0
-                                if clen > 1:
-                                    output[pos + 1] = val1
+                                for i in range(clen):
+                                    output[pos + i] = res_vals[i]
                                 base_chunk_idx += 1
                             
                             if base_chunk_idx > old_base:

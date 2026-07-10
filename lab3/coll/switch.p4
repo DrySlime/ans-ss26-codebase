@@ -38,6 +38,10 @@ header switchml_t {
     bit<16> chunk_len;
     int<32> val0;
     int<32> val1;
+    int<32> val2;
+    int<32> val3;
+    int<32> val4;
+    int<32> val5;
 }
 
 struct headers_t {
@@ -89,6 +93,10 @@ control ingress(inout headers_t hdr, inout metadata_t meta,
     register<bit<32>>(64) bitmap;
     register<int<32>>(64) pool0;
     register<int<32>>(64) pool1;
+    register<int<32>>(64) pool2;
+    register<int<32>>(64) pool3;
+    register<int<32>>(64) pool4;
+    register<int<32>>(64) pool5;
 
     action flood() {
         flood_mgid.read(std.mcast_grp, 0);
@@ -131,6 +139,10 @@ control ingress(inout headers_t hdr, inout metadata_t meta,
                 expected_chunk_id.write(slot, hdr.switchml.chunk_id);
                 pool0.write(slot, hdr.switchml.val0);
                 pool1.write(slot, hdr.switchml.val1);
+                pool2.write(slot, hdr.switchml.val2);
+                pool3.write(slot, hdr.switchml.val3);
+                pool4.write(slot, hdr.switchml.val4);
+                pool5.write(slot, hdr.switchml.val5);
 
                 bit<16> initial_count = 1;
                 count.write(slot, initial_count);
@@ -166,6 +178,26 @@ control ingress(inout headers_t hdr, inout metadata_t meta,
                     int<32> new_p1 = p1 + hdr.switchml.val1;
                     pool1.write(slot, new_p1);
 
+                    int<32> p2 = 0;
+                    pool2.read(p2, slot);
+                    int<32> new_p2 = p2 + hdr.switchml.val2;
+                    pool2.write(slot, new_p2);
+
+                    int<32> p3 = 0;
+                    pool3.read(p3, slot);
+                    int<32> new_p3 = p3 + hdr.switchml.val3;
+                    pool3.write(slot, new_p3);
+
+                    int<32> p4 = 0;
+                    pool4.read(p4, slot);
+                    int<32> new_p4 = p4 + hdr.switchml.val4;
+                    pool4.write(slot, new_p4);
+
+                    int<32> p5 = 0;
+                    pool5.read(p5, slot);
+                    int<32> new_p5 = p5 + hdr.switchml.val5;
+                    pool5.write(slot, new_p5);
+
                     bit<32> new_bitmap = current_bitmap | rank_mask;
                     bitmap.write(slot, new_bitmap);
 
@@ -176,6 +208,10 @@ control ingress(inout headers_t hdr, inout metadata_t meta,
                         // Complete!
                         hdr.switchml.val0 = new_p0;
                         hdr.switchml.val1 = new_p1;
+                        hdr.switchml.val2 = new_p2;
+                        hdr.switchml.val3 = new_p3;
+                        hdr.switchml.val4 = new_p4;
+                        hdr.switchml.val5 = new_p5;
 
                         // Broadcast result to all workers
                         std.mcast_grp = 1;
@@ -202,6 +238,22 @@ control ingress(inout headers_t hdr, inout metadata_t meta,
                         int<32> p1 = 0;
                         pool1.read(p1, slot);
                         hdr.switchml.val1 = p1;
+
+                        int<32> p2 = 0;
+                        pool2.read(p2, slot);
+                        hdr.switchml.val2 = p2;
+
+                        int<32> p3 = 0;
+                        pool3.read(p3, slot);
+                        hdr.switchml.val3 = p3;
+
+                        int<32> p4 = 0;
+                        pool4.read(p4, slot);
+                        hdr.switchml.val4 = p4;
+
+                        int<32> p5 = 0;
+                        pool5.read(p5, slot);
+                        hdr.switchml.val5 = p5;
 
                         // Broadcast result to all workers (robust against loss and avoids unicast ARP issues)
                         std.mcast_grp = 1;

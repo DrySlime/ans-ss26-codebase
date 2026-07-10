@@ -29,6 +29,10 @@ class CollController(controller.Client):
         self.register_reset("ingress.bitmap")
         self.register_reset("ingress.pool0")
         self.register_reset("ingress.pool1")
+        self.register_reset("ingress.pool2")
+        self.register_reset("ingress.pool3")
+        self.register_reset("ingress.pool4")
+        self.register_reset("ingress.pool5")
 
 
 if __name__ == "__main__":
