@@ -1,6 +1,6 @@
 #!/bin/bash
 
-N=${1:-2}
+N=${1:-4}
 SCRIPT=${2:-worker.py}
 
 mkdir -p log
