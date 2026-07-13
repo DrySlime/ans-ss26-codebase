@@ -12,13 +12,12 @@ net = NetworkAPI()
 net.addP4Switch('s1')
 net.setP4Source('s1', 'switch.p4')
 
-# --- clients ---
-for i in range(1, 7):
-    h = net.addHost(f"h{i}")
-    net.addLink(h, "s1")
-    net.setIntfName(h, "s1", "eth0")
-    net.setIntfMac(h, "s1", f"00:00:00:00:00:{i:02x}")
-    net.setIntfIp(h, "s1", f"10.0.0.{i}/24")
+# --- client ---
+h = net.addHost("h1")
+net.addLink(h, "s1")
+net.setIntfName(h, "s1", "eth0")
+net.setIntfMac(h, "s1", "00:00:00:00:00:01")
+net.setIntfIp(h, "s1", "10.0.0.1/24")
 
 net.setLogLevel("info")
 net.disableArpTables()
@@ -29,4 +28,3 @@ net.enablePcapDumpAll(pcap_dir=f"{log}/pcap")  # per-interface .pcap captures
 
 net.startNetwork()
 net.enableCli()
-

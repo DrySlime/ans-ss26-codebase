@@ -39,7 +39,7 @@ class MyCalculator(Calculator):
 if __name__ == "__main__":
     c = MyCalculator()
     
-    # Run in parallel-safe stateless mode if argument is provided
+    # Run in parallel-safe stateless mode if argument is provided for my couple tests
     if len(sys.argv) > 1 and sys.argv[1] == "stateless":
         print("Running parallel-safe stateless tests...")
         assert c.add(5, 10) == 15, f"add failed: got {c.add(5, 10)}"

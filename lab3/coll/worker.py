@@ -12,6 +12,21 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from util.collectives import Collectives, Test
 from util.network import get_ip, set_drop_prob, recv, send
 
+# Fix Mininet 'mx' staircased terminal output by converting \n to \r\n
+class CRLFStream:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, data):
+        self.stream.write(data.replace("\r\n", "\n").replace("\n", "\r\n"))
+
+    def flush(self):
+        self.stream.flush()
+
+sys.stdout = CRLFStream(sys.stdout)
+
+DEBUG = False  # Set to True to enable detailed logging per chunk
+
 class MyCollectives(Collectives):
     def __init__(self, rank, world):
         self.rank = rank
@@ -30,9 +45,11 @@ class MyCollectives(Collectives):
         
         # Keep track of a global chunk_id counter across multiple AllReduce calls
         self.next_chunk_id = 0
+
     def log(self, msg):
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        print(f"[{current_time}] [Rank {self.rank}] {msg}", flush=True)
+        if DEBUG:
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            print(f"[{current_time}] [Rank {self.rank}] {msg}", flush=True)
 
     def AllReduce(self, input: list[int], output: list[int], op : str = "sum"):
         assert len(input), "input cannot be empty"
@@ -100,7 +117,6 @@ class MyCollectives(Collectives):
                         if not completed[c_idx]:
                             completed[c_idx] = True
                             results[c_idx] = (res_vals, res_chunk_len)
-                            #self.log(f"Received result for chunk {c_idx} (global ID {res_chunk_id})")
                             
                             # Slide window base as far as possible
                             old_base = base_chunk_idx
@@ -110,10 +126,6 @@ class MyCollectives(Collectives):
                                 for i in range(clen):
                                     output[pos + i] = res_vals[i]
                                 base_chunk_idx += 1
-                            
-                            if base_chunk_idx > old_base:
-                                pass
-                                #self.log(f"Slid window base from chunk {old_base} to {base_chunk_idx}")
                 except (BlockingIOError, socket.timeout, OSError):
                     # No more packets to read in this iteration
                     break
@@ -122,8 +134,6 @@ class MyCollectives(Collectives):
             now = time.time()
             for c_idx in range(base_chunk_idx, next_to_send_idx):
                 if not completed[c_idx] and (now - sent_time[c_idx] > TIMEOUT):
-                    elapsed_ms = (now - sent_time[c_idx]) * 1000
-                    #self.log(f"TIMEOUT: chunk {c_idx} uncompleted for {elapsed_ms:.1f}ms (threshold {TIMEOUT*1000:.1f}ms)")
                     send_chunk(c_idx)
                     
             # 4. If no packets were read in this iteration, yield CPU to the switch
@@ -138,12 +148,10 @@ class MyCollectives(Collectives):
     def ReduceScatter(self, input: list[int], output: list[int]):
         assert len(input), "input cannot be empty"
         assert len(input) == (len(output) * self.world), "input size must be N * output size"
-        # TODO: Implement me only if you attempt the bonus
 
     def AllGather(self, input: list[int], output: list[int]):
         assert len(input), "input cannot be empty"
         assert len(output) == (len(input) * self.world), "input size must be N * input size"
-        # TODO: Implement me only if you attempt the bonus
 
 
 if __name__ == "__main__":
@@ -152,15 +160,9 @@ if __name__ == "__main__":
     p.add_argument("world", type=int)
     args = p.parse_args()
 
-    # HIER EINFÜGEN: Simuliert 10% Verlust beim Senden und 10% beim Empfangen.
-    # Wir nutzen einen unterschiedlichen Seed pro Rank, damit der Zufall unabhängig ist.
     set_drop_prob(send=0.2, recv=0.2, seed=42 + args.rank)
-    # Use MyCollectives instead of the base Collectives class
     coll = MyCollectives(args.rank, args.world)
 
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     print(f"[{current_time}] --- Running AllReduce tests for rank {args.rank} ---")
-    # Run the comprehensive test suite for AllReduce with vector size 66
-    # It tests all patterns (ones, ranks, iota, iota_rot, powers, signs, etc.)
     Test.test_allreduce(coll, args.rank, args.world, 66)
-

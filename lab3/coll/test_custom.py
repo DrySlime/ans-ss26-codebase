@@ -13,24 +13,38 @@ from util.collectives import Collectives
 from util.network import get_ip, set_drop_prob, recv, send
 from worker import MyCollectives
 
+# Fix Mininet 'mx' staircased terminal output by converting \n to \r\n
+class CRLFStream:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, data):
+        self.stream.write(data.replace("\r\n", "\n").replace("\n", "\r\n"))
+
+    def flush(self):
+        self.stream.flush()
+
+sys.stdout = CRLFStream(sys.stdout)
+
+DEBUG = False  # Set to True for verbose per-test progress logs
+
 def run_test(coll, rank, world, size, loss_rate):
     set_drop_prob(send=loss_rate, recv=loss_rate, seed=42 + rank)
     
-    # Generate deterministic inputs
-    # e.g., rank 0 sends [0, 1, 2, ...], rank 1 sends [1, 2, 3, ...]
-    # For AllReduce sum, the expected output at pos i is: sum_{r=0}^{world-1} (i + r)
     inp = [i + rank for i in range(size)]
     expected = [sum(i + r for r in range(world)) for i in range(size)]
     out = [0] * size
     
-    print(f"\n--- [Rank {rank}] Running test: Size {size}, Loss {loss_rate*100:.0f}% ---", flush=True)
+    if DEBUG:
+        print(f"\n--- [Rank {rank}] Running test: Size {size}, Loss {loss_rate*100:.0f}% ---", flush=True)
     
     start_time = time.time()
     try:
         coll.AllReduce(inp, out)
         elapsed_ms = (time.time() - start_time) * 1000
         if out == expected:
-            print(f"[Rank {rank}] SUCCESS: size {size}, loss {loss_rate*100:.0f}%", flush=True)
+            if DEBUG:
+                print(f"[Rank {rank}] SUCCESS: size {size}, loss {loss_rate*100:.0f}%", flush=True)
             return True, elapsed_ms
         else:
             print(f"[Rank {rank}] FAILURE: size {size}, loss {loss_rate*100:.0f}%", flush=True)
@@ -48,17 +62,12 @@ if __name__ == "__main__":
     p.add_argument("world", type=int)
     args = p.parse_args()
 
-    # Clear terminal output buffer
     sys.stdout.flush()
-
     print(f"=== Starting Custom AllReduce Test Suite for Rank {args.rank} (World Size {args.world}) ===")
     
-    # Instantiate once to preserve self.next_chunk_id counter across loop iterations
     coll = MyCollectives(args.rank, args.world)
-    
     results = []
     
-    # Define test cases
     test_cases = [
         {"desc": "Size smaller than CHUNK_SIZE", "size": 1, "loss": 0.0},
         {"desc": "Size equal to CHUNK_SIZE", "size": 2, "loss": 0.0},
